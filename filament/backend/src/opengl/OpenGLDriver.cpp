@@ -93,7 +93,7 @@ Driver* OpenGLDriver::create(
             return {};
         }
 
-        if (GLES31_HEADERS) {
+        if (GLES30_HEADERS) {
             // we require GLES 3.1 headers, but we support GLES 3.0
             if (UTILS_UNLIKELY(!(major >= 3 && minor >= 0))) {
                 PANIC_LOG("OpenGL ES 3.0 minimum needed (current %d.%d)", major, minor);
@@ -163,6 +163,15 @@ OpenGLDriver::~OpenGLDriver() noexcept {
 // ------------------------------------------------------------------------------------------------
 
 void OpenGLDriver::terminate() {
+    // wait for the GPU to finish executing all commands
+    glFinish();
+
+    // and make sure to execute all the GpuCommandCompleteOps callbacks
+    executeGpuCommandsCompleteOps();
+
+    // because we called glFinish(), all callbacks should have been executed
+    assert(!mGpuCommandCompleteOps.size());
+
     for (auto& item : mSamplerMap) {
         mContext.unbindSampler(item.second);
         glDeleteSamplers(1, &item.second);
@@ -201,7 +210,7 @@ void OpenGLDriver::initClearProgram() noexcept {
         }
         )SHADER";
 
-    if (GLES31_HEADERS) {
+    if (GLES30_HEADERS) {
         GLint status;
         char const* const vsource = clearVertexES;
         char const* const fsource = clearFragmentES;
@@ -234,7 +243,7 @@ void OpenGLDriver::initClearProgram() noexcept {
 }
 
 void OpenGLDriver::terminateClearProgram() noexcept {
-    if (GLES31_HEADERS) {
+    if (GLES30_HEADERS) {
         glDetachShader(mClearProgram, mClearVertexShader);
         glDetachShader(mClearProgram, mClearFragmentShader);
         glDeleteShader(mClearVertexShader);
@@ -328,7 +337,7 @@ void OpenGLDriver::setRasterStateSlow(RasterState rs) noexcept {
 // For reference on a 64-bits machine:
 //    GLFence                   :  8
 //    GLIndexBuffer             : 12        moderate
-//    GLSamplerGroup           : 16        moderate
+//    GLSamplerGroup            : 16        moderate
 // -- less than 16 bytes
 
 //    GLRenderPrimitive         : 40        many
@@ -351,7 +360,8 @@ OpenGLDriver::HandleAllocator::HandleAllocator(const utils::HeapArea& area)
           mPool2( pointermath::add(area.begin(), (6 * area.getSize()) / 16),
                   area.end()) {
 
-#ifndef NDEBUG
+#if 0
+    // this is useful for development, but too verbose even for debug builds
     slog.d << "HwFence: " << sizeof(HwFence) << io::endl;
     slog.d << "GLIndexBuffer: " << sizeof(GLIndexBuffer) << io::endl;
     slog.d << "GLSamplerGroup: " << sizeof(GLSamplerGroup) << io::endl;
@@ -461,6 +471,10 @@ Handle<HwFence> OpenGLDriver::createFenceS() noexcept {
 }
 
 Handle<HwSwapChain> OpenGLDriver::createSwapChainS() noexcept {
+    return Handle<HwSwapChain>( allocateHandle(sizeof(HwSwapChain)) );
+}
+
+Handle<HwSwapChain> OpenGLDriver::createSwapChainHeadlessS() noexcept {
     return Handle<HwSwapChain>( allocateHandle(sizeof(HwSwapChain)) );
 }
 
@@ -589,8 +603,6 @@ void OpenGLDriver::textureStorage(OpenGLDriver::GLTexture* t,
                 // TODO: use glTexStorage2DMultisample() on GL 4.3 and above
                 glTexImage2DMultisample(t->gl.target, t->samples, t->gl.internalFormat,
                         GLsizei(width), GLsizei(height), GL_TRUE);
-#else
-#   error "GL/GLES header version not supported"
 #endif
             } else {
                 PANIC_LOG("GL_TEXTURE_2D_MULTISAMPLE is not supported");
@@ -983,6 +995,14 @@ void OpenGLDriver::createSwapChainR(Handle<HwSwapChain> sch, void* nativeWindow,
 
     HwSwapChain* sc = construct<HwSwapChain>(sch);
     sc->swapChain = mPlatform.createSwapChain(nativeWindow, flags);
+}
+
+void OpenGLDriver::createSwapChainHeadlessR(Handle<HwSwapChain> sch,
+        uint32_t width, uint32_t height, uint64_t flags) {
+    DEBUG_MARKER()
+
+    HwSwapChain* sc = construct<HwSwapChain>(sch);
+    sc->swapChain = mPlatform.createSwapChain(width, height, flags);
 }
 
 void OpenGLDriver::createStreamFromTextureIdR(Handle<HwStream> sh,
@@ -1812,7 +1832,7 @@ void OpenGLDriver::beginRenderPass(Handle<HwRenderTarget> rth,
 
         // glInvalidateFramebuffer appeared on GLES 3.0 and GL4.3, for simplicity we just
         // ignore it on GL (rather than having to do a runtime check).
-        if (GLES31_HEADERS) {
+        if (GLES30_HEADERS) {
             if (!gl.bugs.disable_invalidate_framebuffer) {
                 std::array<GLenum, 3> attachments; // NOLINT
                 GLsizei attachmentCount = getAttachments(attachments, rt, discardFlags);
@@ -1864,7 +1884,7 @@ void OpenGLDriver::beginRenderPass(Handle<HwRenderTarget> rth,
         } else {
             gl.disable(GL_SCISSOR_TEST);
         }
-        if (respectScissor && GLES31_HEADERS && gl.bugs.clears_hurt_performance) {
+        if (respectScissor && GLES30_HEADERS && gl.bugs.clears_hurt_performance) {
             // With OpenGL ES, we clear the viewport using geometry to improve performance on certain
             // OpenGL drivers. e.g. on Adreno this avoids needless loads from the GMEM.
             clearWithGeometryPipe(clearColor, params.clearColor,
@@ -1900,7 +1920,7 @@ void OpenGLDriver::endRenderPass(int) {
 
     // glInvalidateFramebuffer appeared on GLES 3.0 and GL4.3, for simplicity we just
     // ignore it on GL (rather than having to do a runtime check).
-    if (GLES31_HEADERS) {
+    if (GLES30_HEADERS) {
         if (!gl.bugs.disable_invalidate_framebuffer) {
             // we wouldn't have to bind the framebuffer if we had glInvalidateNamedFramebuffer()
             gl.bindFramebuffer(GL_FRAMEBUFFER, rt->gl.fbo);
@@ -1952,7 +1972,7 @@ void OpenGLDriver::discardSubRenderTargetBuffers(Handle<HwRenderTarget> rth,
 
     // glInvalidateSubFramebuffer appeared on GLES 3.0 and GL4.3, for simplicity we just
     // ignore it on GL (rather than having to do a runtime check).
-    if (GLES31_HEADERS) {
+    if (GLES30_HEADERS) {
         // we wouldn't have to bind the framebuffer if we had glInvalidateNamedFramebuffer()
         GLRenderTarget const* rt = handle_cast<GLRenderTarget const*>(rth);
 
@@ -2408,33 +2428,84 @@ void OpenGLDriver::readPixels(Handle<HwRenderTarget> src,
     gl.bindFramebuffer(GL_READ_FRAMEBUFFER, s->gl.fbo);
 
     // TODO: we could use a PBO to make this asynchronous
-    glReadPixels(GLint(x), GLint(y), GLint(width), GLint(height), glFormat, glType, p.buffer);
+    //glReadPixels(GLint(x), GLint(y), GLint(width), GLint(height), glFormat, glType, p.buffer);
 
-    // now we need to flip the buffer vertically to match our API
-    size_t stride = p.stride ? p.stride : width;
-    size_t bpp = PixelBufferDescriptor::computeDataSize(p.format, p.type, 1, 1, 1);
-    size_t bpr = PixelBufferDescriptor::computeDataSize(p.format, p.type, stride, 1, p.alignment);
-    char* head = (char*)p.buffer + p.left * bpp + bpr * p.top;
-    char* tail = (char*)p.buffer + p.left * bpp + bpr * (p.top + height - 1);
-    // clang vectorizes this loop
-    while (head < tail) {
-        std::swap_ranges(head, head + bpp * width, tail);
-        head += bpr;
-        tail -= bpr;
-    }
+    GLuint pbo;
+    glGenBuffers(1, &pbo);
+    gl.bindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+    glBufferData(GL_PIXEL_PACK_BUFFER, p.size, nullptr, GL_STATIC_DRAW);
+    glReadPixels(GLint(x), GLint(y), GLint(width), GLint(height), glFormat, glType, nullptr);
+    gl.bindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
-    scheduleDestroy(std::move(p));
+    // we're forced to make a copy on the heap because otherwise it deletes std::function<> copy
+    // constructor.
+    auto* pUserBuffer = new PixelBufferDescriptor(std::move(p));
+    whenGpuCommandsComplete([this, width, height, pbo, pUserBuffer]() mutable {
+        PixelBufferDescriptor& p = *pUserBuffer;
+        auto& gl = mContext;
+        gl.bindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+        void* vaddr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0,  p.size, GL_MAP_READ_BIT);
+        if (vaddr) {
+            // now we need to flip the buffer vertically to match our API
+            size_t stride = p.stride ? p.stride : width;
+            size_t bpp = PixelBufferDescriptor::computeDataSize(
+                    p.format, p.type, 1, 1, 1);
+            size_t bpr = PixelBufferDescriptor::computeDataSize(
+                    p.format, p.type, stride, 1, p.alignment);
+            char const* head = (char const*)vaddr + p.left * bpp + bpr * p.top;
+            char* tail = (char*)p.buffer + p.left * bpp + bpr * (p.top + height - 1);
+            for (size_t i = 0; i < height; ++i) {
+                memcpy(tail, head, bpp * width);
+                head += bpr;
+                tail -= bpr;
+            }
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
+        gl.bindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        glDeleteBuffers(1, &pbo);
+        scheduleDestroy(std::move(p));
+        delete pUserBuffer;
+        CHECK_GL_ERROR(utils::slog.e)
+    });
 
     CHECK_GL_ERROR(utils::slog.e)
+}
+
+void OpenGLDriver::whenGpuCommandsComplete(std::function<void(void)> fn) noexcept {
+    GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    mGpuCommandCompleteOps.emplace_back(sync, std::move(fn));
+    CHECK_GL_ERROR(utils::slog.e)
+}
+
+void OpenGLDriver::executeGpuCommandsCompleteOps() noexcept {
+    auto& v = mGpuCommandCompleteOps;
+    auto it = v.begin();
+    while (it != v.end()) {
+        GLenum status = glClientWaitSync(it->first, 0, 0);
+        if (status == GL_ALREADY_SIGNALED || status == GL_CONDITION_SATISFIED) {
+            it->second();
+            glDeleteSync(it->first);
+            it = v.erase(it);
+        } else if (UTILS_UNLIKELY(status == GL_WAIT_FAILED)) {
+            // This should never happen, but is very problematic if it does, as we might leak
+            // some data depending on what the callback does. However, we clean-up our own state.
+            glDeleteSync(it->first);
+            it = v.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
 // Rendering ops
 // ------------------------------------------------------------------------------------------------
 
-void OpenGLDriver::beginFrame(int64_t monotonic_clock_ns, uint32_t frameId) {
+void OpenGLDriver::beginFrame(int64_t monotonic_clock_ns, uint32_t frameId,
+        backend::FrameFinishedCallback, void*) {
     auto& gl = mContext;
     insertEventMarker("beginFrame");
+    executeGpuCommandsCompleteOps();
     if (UTILS_UNLIKELY(!mExternalStreams.empty())) {
         OpenGLPlatform& platform = mPlatform;
         for (GLTexture const* t : mExternalStreams) {
@@ -2457,6 +2528,7 @@ void OpenGLDriver::setPresentationTime(int64_t monotonic_clock_ns) {
 void OpenGLDriver::endFrame(uint32_t frameId) {
     //SYSTRACE_NAME("glFinish");
     //glFinish();
+    //executeGpuCommandsCompleteOps();
     insertEventMarker("endFrame");
 }
 
@@ -2466,6 +2538,12 @@ void OpenGLDriver::flush(int) {
     if (!gl.bugs.disable_glFlush) {
         glFlush();
     }
+}
+
+void OpenGLDriver::finish(int) {
+    DEBUG_MARKER()
+    glFinish();
+    executeGpuCommandsCompleteOps();
 }
 
 UTILS_NOINLINE
@@ -2511,7 +2589,7 @@ void OpenGLDriver::clearWithGeometryPipe(
     auto& gl = mContext;
 
     // GLES is required to use this method; see initClearProgram.
-    assert(GLES31_HEADERS);
+    assert(GLES30_HEADERS);
 
     // TODO: handle stencil clear with geometry as well
     if (clearStencil) {

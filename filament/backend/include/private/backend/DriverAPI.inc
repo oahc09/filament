@@ -110,7 +110,9 @@
 
 DECL_DRIVER_API_N(beginFrame,
         int64_t, monotonic_clock_ns,
-        uint32_t, frameId)
+        uint32_t, frameId,
+        backend::FrameFinishedCallback, callback,
+        void*, user)
 
 DECL_DRIVER_API_N(setPresentationTime,
         int64_t, monotonic_clock_ns)
@@ -121,6 +123,9 @@ DECL_DRIVER_API_N(endFrame,
 // hint to the driver that we're done with all render targets up to this point. i.e. the driver
 // can start rendering. e.g. correspond to glFlush() for a GLES driver.
 DECL_DRIVER_API_0(flush)
+
+// flush and wait for the effects to be done
+DECL_DRIVER_API_0(finish)
 
 /*
  * Creating driver objects
@@ -176,6 +181,11 @@ DECL_DRIVER_API_R_0(backend::FenceHandle, createFence)
 
 DECL_DRIVER_API_R_N(backend::SwapChainHandle, createSwapChain,
         void*, nativeWindow,
+        uint64_t, flags)
+
+DECL_DRIVER_API_R_N(backend::SwapChainHandle, createSwapChainHeadless,
+        uint32_t, width,
+        uint32_t, height,
         uint64_t, flags)
 
 DECL_DRIVER_API_R_N(backend::StreamHandle, createStreamFromTextureId,

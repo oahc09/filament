@@ -19,6 +19,7 @@ set(PUBLIC_HDRS
 
 set(SRCS
         src/BackendUtils.cpp
+        src/Callable.cpp
         src/CircularBuffer.cpp
         src/CommandBufferQueue.cpp
         src/CommandStream.cpp
@@ -245,6 +246,11 @@ if (NOT MSVC_NATIVE)
     )
 else()
     set(FILAMENT_WARNINGS /W0)
+endif()
+
+if (APPLE)
+    # Turn on Automatic Reference Counting.
+    target_compile_options(${TARGET} PRIVATE "-fobjc-arc")
 endif()
 
 # clang-cl maps -Wall to -Weverything, which clutters logs with benign -Wc++98-compat warnings

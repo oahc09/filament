@@ -375,21 +375,11 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity) {
         builder.morphing(true);
     }
 
-    // Transform all eight corners of the bounding box and find the new AABB.
-    float3 a = (worldTransform * float4(aabb.min.x, aabb.min.y, aabb.min.z, 1.0)).xyz;
-    float3 b = (worldTransform * float4(aabb.min.x, aabb.min.y, aabb.max.z, 1.0)).xyz;
-    float3 c = (worldTransform * float4(aabb.min.x, aabb.max.y, aabb.min.z, 1.0)).xyz;
-    float3 d = (worldTransform * float4(aabb.min.x, aabb.max.y, aabb.max.z, 1.0)).xyz;
-    float3 e = (worldTransform * float4(aabb.max.x, aabb.min.y, aabb.min.z, 1.0)).xyz;
-    float3 f = (worldTransform * float4(aabb.max.x, aabb.min.y, aabb.max.z, 1.0)).xyz;
-    float3 g = (worldTransform * float4(aabb.max.x, aabb.max.y, aabb.min.z, 1.0)).xyz;
-    float3 h = (worldTransform * float4(aabb.max.x, aabb.max.y, aabb.max.z, 1.0)).xyz;
-    float3 minpt = min(min(min(min(min(min(min(a, b), c), d), e), f), g), h);
-    float3 maxpt = max(max(max(max(max(max(max(a, b), c), d), e), f), g), h);
+    const Aabb transformed = aabb.transform(worldTransform);
 
     // Expand the world-space bounding box.
-    mResult->mBoundingBox.min = min(mResult->mBoundingBox.min, minpt);
-    mResult->mBoundingBox.max = max(mResult->mBoundingBox.max, maxpt);
+    mResult->mBoundingBox.min = min(mResult->mBoundingBox.min, transformed.min);
+    mResult->mBoundingBox.max = max(mResult->mBoundingBox.max, transformed.max);
 
     if (node->skin) {
        builder.skinning(node->skin->joints_count);
@@ -417,7 +407,10 @@ void FAssetLoader::createRenderable(const cgltf_node* node, Entity entity) {
     if (numMorphTargets > 0) {
         RenderableManager::Instance renderable = mRenderableManager.getInstance(entity);
         float4 weights(0, 0, 0, 0);
-        for (cgltf_size i = 0; i < std::min(cgltf_size(4), node->weights_count); ++i) {
+        for (cgltf_size i = 0; i < std::min(MAX_MORPH_TARGETS, mesh->weights_count); ++i) {
+            weights[i] = mesh->weights[i];
+        }
+        for (cgltf_size i = 0; i < std::min(MAX_MORPH_TARGETS, node->weights_count); ++i) {
             weights[i] = node->weights[i];
         }
         mRenderableManager.setMorphWeights(renderable, weights);
@@ -542,7 +535,12 @@ bool FAssetLoader::createPrimitive(const cgltf_primitive* inPrim, Primitive* out
         vbb.normalized(semantic, inputAccessor->normalized);
     }
 
-    const cgltf_size targetsCount = std::min(cgltf_size(4), inPrim->targets_count);
+    cgltf_size targetsCount = inPrim->targets_count;
+    if (targetsCount > MAX_MORPH_TARGETS) {
+        slog.w << "Too many morph targets in " << name << io::endl;
+        targetsCount = MAX_MORPH_TARGETS;
+    }
+
     constexpr int baseTangentsAttr = (int) VertexAttribute::MORPH_TANGENTS_0;
     constexpr int basePositionAttr = (int) VertexAttribute::MORPH_POSITION_0;
 
@@ -755,16 +753,18 @@ MaterialInstance* FAssetLoader::createMaterialInstance(const cgltf_material* inp
         return iter->second.instance;
     }
 
-    // The default glTF material is non-lit black.
-    if (inputMat == nullptr) {
-        MaterialKey matkey {
-            .unlit = true
-        };
-        MaterialInstance* mi = mMaterials->createMaterialInstance(&matkey, uvmap, "default");
-        mResult->mMaterialInstances.push_back(mi);
-        mMatInstanceCache[0] = {mi, *uvmap};
-        return mi;
-    }
+    // The default glTF material.
+    static const cgltf_material kDefaultMat = {
+        .name = (char*) "Default GLTF material",
+        .has_pbr_metallic_roughness = true,
+        .has_pbr_specular_glossiness = false,
+        .pbr_metallic_roughness = {
+	        .base_color_factor = {1.0, 1.0, 1.0, 1.0},
+	        .metallic_factor = 1.0,
+	        .roughness_factor = 1.0,
+        },
+    };
+    inputMat = inputMat ? inputMat : &kDefaultMat;
 
     auto mrConfig = inputMat->pbr_metallic_roughness;
     auto sgConfig = inputMat->pbr_specular_glossiness;
