@@ -24,14 +24,16 @@
 #include <thread>
 #include <vector>
 
+#include <tsl/robin_map.h>
+
 #include <utils/Allocator.h>
 #include <utils/architecture.h>
+#include <utils/compiler.h>
 #include <utils/Condition.h>
 #include <utils/Log.h>
 #include <utils/memalign.h>
 #include <utils/Mutex.h>
 #include <utils/Slice.h>
-#include <utils/ThreadLocal.h>
 #include <utils/WorkStealingDequeue.h>
 
 namespace utils {
@@ -87,14 +89,14 @@ public:
     void emancipate();
 
 
-    // return the JobSystem this thread is associated with. nullptr if this thread is not
-    // part of a Jobsystem.
-    static JobSystem* getJobSystem() noexcept;
-
     // If a parent is not specified when creating a job, that job will automatically take the
-    // master job as a parent.
-    // The master job is reset when waited on.
-    Job* setMasterJob(Job* job) noexcept { return mMasterJob = job; }
+    // root job as a parent.
+    // The root job is reset when waited on.
+    Job* setRootJob(Job* job) noexcept { return mRootJob = job; }
+
+     // use setRootJob() instead
+    UTILS_DEPRECATED
+    Job* setMasterJob(Job* job) noexcept { return setRootJob(job); }
 
 
     Job* create(Job* parent, JobFunc func) noexcept;
@@ -340,7 +342,7 @@ private:
     static_assert(sizeof(ThreadState) % CACHELINE_SIZE == 0,
             "ThreadState doesn't align to a cache line");
 
-    static ThreadState& getState() noexcept;
+    ThreadState& getState() noexcept;
 
     void incRef(Job const* job) noexcept;
     void decRef(Job const* job) noexcept;
@@ -403,9 +405,10 @@ private:
     Job* const mJobStorageBase;                         // Base for conversion to indices
     uint16_t mThreadCount = 0;                          // total # of threads in the pool
     uint8_t mParallelSplitCount = 0;                    // # of split allowable in parallel_for
-    Job* mMasterJob = nullptr;
+    Job* mRootJob = nullptr;
 
-    static UTILS_DECLARE_TLS(ThreadState *) sThreadState;
+    utils::SpinLock mThreadMapLock; // this should have very little contention
+    tsl::robin_map<std::thread::id, ThreadState *> mThreadMap;
 };
 
 // -------------------------------------------------------------------------------------------------

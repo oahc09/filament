@@ -24,19 +24,17 @@
 #include <utils/Entity.h>
 #include <utils/EntityInstance.h>
 
-#include <math/vec3.h>
+#include <math/mathfwd.h>
 
-#include <math.h>
+namespace utils {
+    class Entity;
+} // namespace utils
 
 namespace filament {
 
 class Engine;
-
-namespace details {
 class FEngine;
 class FLightManager;
-} // namespace details
-
 
 /**
  * LightManager allows to create a light source in the scene, such as a sun or street lights.
@@ -79,7 +77,7 @@ class FLightManager;
  * parallel and come from infinitely far away and from everywhere. Typically a directional light
  * is used to simulate the sun.
  *
- * Directional lights are able to cast shadows.
+ * Directional lights and spot lights are able to cast shadows.
  *
  * To create a directional light use Type.DIRECTIONAL or Type.SUN, both are similar, but the later
  * also draws a sun's disk in the sky and its reflection on glossy objects.
@@ -115,7 +113,7 @@ class FLightManager;
  * changing volume. The coupling of illumination and the outer cone means that an artist cannot
  * tweak the influence cone of a spot light without also changing the perceived illumination.
  * It therefore makes sense to provide artists with a parameter to disable this coupling. This
- * is the difference between Type.SPOT and Type.FOCUSED_SPOT.
+ * is the difference between Type.FOCUSED_SPOT and Type.SPOT.
  *
  * @see Builder.position(), Builder.direction(), Builder.falloff(), Builder.spotLightCone()
  *
@@ -144,6 +142,21 @@ public:
     using Instance = utils::EntityInstance<LightManager>;
 
     /**
+     * Returns the number of component in the LightManager, not that component are not
+     * guaranteed to be active. Use the EntityManager::isAlive() before use if needed.
+     *
+     * @return number of component in the LightManager
+     */
+    size_t getComponentCount() const noexcept;
+
+    /**
+     * Returns the list of Entity for all components. Use getComponentCount() to know the size
+     * of the list.
+     * @return a pointer to Entity
+     */
+    utils::Entity const* getEntities() const noexcept;
+
+    /**
      * Returns whether a particular Entity is associated with a component of this LightManager
      * @param e An Entity.
      * @return true if this Entity has a component associated with this manager.
@@ -168,8 +181,8 @@ public:
         SUN,            //!< Directional light that also draws a sun's disk in the sky.
         DIRECTIONAL,    //!< Directional light, emits light in a given direction.
         POINT,          //!< Point light, emits light from a position, in all directions.
-        FOCUSED_SPOT,   //!< Spot light with coupling of outer cone and illumination disabled.
-        SPOT,           //!< Physically correct spot light.
+        FOCUSED_SPOT,   //!< Physically correct spot light.
+        SPOT,           //!< Spot light with coupling of outer cone and illumination disabled.
     };
 
     /**
@@ -178,6 +191,42 @@ public:
     struct ShadowOptions {
         /** Size of the shadow map in texels. Must be a power-of-two. */
         uint32_t mapSize = 1024;
+
+        /**
+         * Number of shadow cascades to use for this light. Must be between 1 and 4 (inclusive).
+         * A value greater than 1 turns on cascaded shadow mapping (CSM).
+         * Only applicable to Type.SUN or Type.DIRECTIONAL lights.
+         *
+         * When using shadow cascades, cascadeSplitPositions must also be set.
+         *
+         * @see ShadowOptions::cascadeSplitPositions
+         */
+        uint8_t shadowCascades = 1;
+
+        /**
+         * The split positions for shadow cascades.
+         *
+         * Cascaded shadow mapping (CSM) partitions the camera frustum into cascades. These values
+         * determine the planes along the camera's Z axis to split the frustum. The camera near
+         * plane is represented by 0.0f and the far plane represented by 1.0f.
+         *
+         * For example, if using 4 cascades, these values would set a uniform split scheme:
+         * { 0.25f, 0.50f, 0.75f }
+         *
+         * For N cascades, N - 1 split positions will be read from this array.
+         *
+         * Filament provides utility methods inside LightManager::ShadowCascades to help set these
+         * values. For example, to use a uniform split scheme:
+         *
+         * ~~~~~~~~~~~{.cpp}
+         *   LightManager::ShadowCascades::computeUniformSplits(options.splitPositions, 4);
+         * ~~~~~~~~~~~
+         *
+         * @see ShadowCascades::computeUniformSplits
+         * @see ShadowCascades::computeLogSplits
+         * @see ShadowCascades::computePracticalSplits
+         */
+        float cascadeSplitPositions[3] = { 0.25f, 0.50f, 0.75f };
 
         /** Constant bias in world units (e.g. meters) by which shadows are moved away from the
          * light. 1mm by default.
@@ -232,6 +281,94 @@ public:
          * Setting this value correctly is essential for LISPSM shadow-maps.
          */
         float polygonOffsetSlope = 2.0f;
+
+        /**
+         * Whether screen-space contact shadows are used. This applies regardless of whether a
+         * Renderable is a shadow caster.
+         * Screen-space contact shadows are typically useful in large scenes.
+         * (off by default)
+         */
+        bool screenSpaceContactShadows = false;
+
+        /**
+         * Number of ray-marching steps for screen-space contact shadows (8 by default).
+         *
+         * CAUTION: this parameter is ignored for all lights except the directional/sun light,
+         *          all other lights use the same value set for the directional/sun light.
+         *
+         */
+        uint8_t stepCount = 8;
+
+        /**
+         * Maximum shadow-occluder distance for screen-space contact shadows (world units).
+         * (30 cm by default)
+         *
+         * CAUTION: this parameter is ignored for all lights except the directional/sun light,
+         *          all other lights use the same value set for the directional/sun light.
+         *
+         */
+        float maxShadowDistance = 0.3;
+
+        /**
+         * Options available when the View's ShadowType is set to VSM.
+         *
+         * @warning This API is still experimental and subject to change.
+         * @see View::setShadowType
+         */
+        struct {
+            /**
+             * The number of MSAA samples to use when rendering VSM shadow maps.
+             * Must be a power-of-two and greater than or equal to 1. A value of 1 effectively turns
+             * off MSAA.
+             * Higher values may not be available depending on the underlying hardware.
+             */
+            uint8_t msaaSamples = 1;
+        } vsm;
+    };
+
+    struct ShadowCascades {
+        /**
+         * Utility method to compute ShadowOptions::cascadeSplitPositions according to a uniform
+         * split scheme.
+         *
+         * @param splitPositions    a float array of at least size (cascades - 1) to write the split
+         *                          positions into
+         * @param cascades          the number of shadow cascades, at most 4
+         */
+        static void computeUniformSplits(float* splitPositions, uint8_t cascades);
+
+        /**
+         * Utility method to compute ShadowOptions::cascadeSplitPositions according to a logarithmic
+         * split scheme.
+         *
+         * @param splitPositions    a float array of at least size (cascades - 1) to write the split
+         *                          positions into
+         * @param cascades          the number of shadow cascades, at most 4
+         * @param near              the camera near plane
+         * @param far               the camera far plane
+         */
+        static void computeLogSplits(float* splitPositions, uint8_t cascades,
+                float near, float far);
+
+        /**
+         * Utility method to compute ShadowOptions::cascadeSplitPositions according to a practical
+         * split scheme.
+         *
+         * The practical split scheme uses uses a lambda value to interpolate between the logarithmic
+         * and uniform split schemes. Start with a lambda value of 0.5f and adjust for your scene.
+         *
+         * See: Zhang et al 2006, "Parallel-split shadow maps for large-scale virtual environments"
+         *
+         * @param splitPositions    a float array of at least size (cascades - 1) to write the split
+         *                          positions into
+         * @param cascades          the number of shadow cascades, at most 4
+         * @param near              the camera near plane
+         * @param far               the camera far plane
+         * @param lambda            a float in the range [0, 1] that interpolates between log and
+         *                          uniform split schemes
+         */
+        static void computePracticalSplits(float* splitPositions, uint8_t cascades,
+                float near, float far, float lambda);
     };
 
     //! Use Builder to construct a Light object instance
@@ -258,7 +395,7 @@ public:
          * @return This Builder, for chaining calls.
          *
          * @warning
-         * - Only a Type.DIRECTIONAL or Type.SUN light can cast shadows
+         * - Only a Type.DIRECTIONAL, Type.SUN, Type.SPOT, or Type.FOCUSED_SPOT light can cast shadows
          */
         Builder& castShadows(bool enable) noexcept;
 
@@ -329,8 +466,25 @@ public:
          *
          * For example, the sun's illuminance is about 100,000 lux.
          *
+         * This method overrides any prior calls to intensity or intensityCandela.
+         *
          */
         Builder& intensity(float intensity) noexcept;
+
+        /**
+         * Sets the initial intensity of a spot or point light in candela.
+         *
+         * @param intensity Luminous intensity in *candela*.
+         *
+         * @return This Builder, for chaining calls.
+         *
+         * @note
+         * This method is equivalent to calling intensity(float intensity) for directional lights
+         * (Type.DIRECTIONAL or Type.SUN).
+         *
+         * This method overrides any prior calls to intensity or intensityCandela.
+         */
+        Builder& intensityCandela(float intensity) noexcept;
 
         /**
          * Sets the initial intensity of a light in watts.
@@ -354,6 +508,8 @@ public:
          *
          * @note
          * This call is equivalent to `Builder::intensity(efficiency * 683 * watts);`
+         *
+         * This method overrides any prior calls to intensity or intensityCandela.
          */
         Builder& intensity(float watts, float efficiency) noexcept;
 
@@ -380,14 +536,15 @@ public:
         /**
          * Defines a spot light'st angular falloff attenuation.
          *
-         * A spot light is defined by a position, a direction and two cone angles,
-         * \p inner and \p outer. These two angles are used to define the angular falloff
-         * attenuation of the spot light.
+         * A spot light is defined by a position, a direction and two cones, \p inner and \p outer.
+         * These two cones are used to define the angular falloff attenuation of the spot light
+         * and are defined by the angle from the center axis to where the falloff begins (i.e.
+         * cones are defined by their half-angle).
          *
-         * @param inner inner cone angle in *radians* between 0 and @f$ \pi @f$
-
-         * @param outer outer cone angle in *radians* between 0 and @f$ \pi @f$
-
+         * @param inner inner cone angle in *radians* between 0 and @f$ \pi/2 @f$
+         *
+         * @param outer outer cone angle in *radians* between \p inner and @f$ \pi/2 @f$
+         *
          * @return This Builder, for chaining calls.
          *
          * @note
@@ -403,7 +560,7 @@ public:
          * The Sun as seen from Earth has an angular size of 0.526° to 0.545°
          *
          * @param angularRadius sun's radius in degree. Default is 0.545°.
-
+         *
          * @return This Builder, for chaining calls.
          */
         Builder& sunAngularRadius(float angularRadius) noexcept;
@@ -453,8 +610,8 @@ public:
         Result build(Engine& engine, utils::Entity entity);
 
     private:
-        friend class details::FEngine;
-        friend class details::FLightManager;
+        friend class FEngine;
+        friend class FLightManager;
     };
 
     static constexpr float EFFICIENCY_INCANDESCENT = 0.0220f;   //!< Typical efficiency of an incandescent light bulb (2.2%)
@@ -578,6 +735,20 @@ public:
     }
 
     /**
+     * Dynamically updates the light's intensity in candela. The intensity can be negative.
+     *
+     * @param i         Instance of the component obtained from getInstance().
+     * @param intensity Luminous intensity in *candela*.
+     *
+     * @note
+     * This method is equivalent to calling setIntensity(float intensity) for directional lights
+     * (Type.DIRECTIONAL or Type.SUN).
+     *
+     * @see Builder.intensityCandela(float intensity)
+     */
+    void setIntensityCandela(Instance i, float intensity) noexcept;
+
+    /**
      * returns the light's luminous intensity in lumen.
      *
      * @param i     Instance of the component obtained from getInstance().
@@ -609,12 +780,14 @@ public:
      * Dynamically updates a spot light's cone as angles
      *
      * @param i     Instance of the component obtained from getInstance().
-     * @param inner inner cone angle in *radians* between 0 and @f$ \pi @f$
-     * @param outer outer cone angle in *radians* between 0 and @f$ \pi @f$
+     * @param inner inner cone angle in *radians* between 0 and pi/2
+     * @param outer outer cone angle in *radians* between inner and pi/2
      *
      * @see Builder.spotLightCone()
      */
     void setSpotLightCone(Instance i, float inner, float outer) noexcept;
+
+    float getSpotLightOuterCone(Instance i) const noexcept;
 
     /**
      * Dynamically updates the angular radius of a Type.SUN light
@@ -687,7 +860,7 @@ public:
      * @param shadowCaster Enables or disables casting shadows from this Light.
      *
      * @warning
-     * - Only a Type.DIRECTIONAL or Type.SUN light can cast shadows
+     * - Only a Type.DIRECTIONAL, Type.SUN, Type.SPOT, or Type.FOCUSED_SPOT light can cast shadows
      */
     void setShadowCaster(Instance i, bool shadowCaster) noexcept;
 
@@ -696,6 +869,20 @@ public:
      * @param i     Instance of the component obtained from getInstance().
      */
     bool isShadowCaster(Instance i) const noexcept;
+
+    /**
+     * Helper to process all components with a given function
+     * @tparam F    a void(Entity entity, Instance instance)
+     * @param func  a function of type F
+     */
+    template<typename F>
+    void forEachComponent(F func) noexcept {
+        utils::Entity const* const pEntity = getEntities();
+        for (size_t i = 0, c = getComponentCount(); i < c; i++) {
+            // Instance 0 is the invalid instance
+            func(pEntity[i], Instance(i + 1));
+        }
+    }
 };
 
 } // namespace filament

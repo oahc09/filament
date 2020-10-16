@@ -40,12 +40,20 @@ public:
         struct Attachment {
             id<MTLTexture> color = nil;
             id<MTLTexture> depth = nil;
-            MTLRegion region;
+            MTLRegion region = {};
             uint8_t level = 0;
         };
 
         Attachment source, destination;
         SamplerMagFilter filter;
+
+        bool blitColor() const {
+            return source.color != nil && destination.color != nil;
+        }
+
+        bool blitDepth() const {
+            return source.depth != nil && destination.depth != nil;
+        }
 
         bool colorDestinationIsFullAttachment() const {
             return destination.color.width == destination.region.size.width &&
@@ -58,7 +66,7 @@ public:
         }
     };
 
-    void blit(const BlitArgs& args);
+    void blit(id<MTLCommandBuffer> cmdBuffer, const BlitArgs& args);
 
     /**
      * Free resources. Should be called at least once per process when no further calls to blit will
@@ -80,7 +88,7 @@ private:
         bool operator==(const BlitFunctionKey& rhs) const noexcept {
             return blitColor == rhs.blitColor &&
                    blitDepth == rhs.blitDepth &&
-                   msaaColorSource == rhs.msaaDepthSource &&
+                   msaaColorSource == rhs.msaaColorSource &&
                    msaaDepthSource == rhs.msaaDepthSource;
         }
 
@@ -89,7 +97,8 @@ private:
         }
     };
 
-    void blitFastPath(bool& blitColor, bool& blitDepth, const BlitArgs& args);
+    void blitFastPath(id<MTLCommandBuffer> cmdBuffer, bool& blitColor, bool& blitDepth,
+            const BlitArgs& args);
     id<MTLFunction> compileFragmentFunction(BlitFunctionKey key);
     id<MTLFunction> getBlitVertexFunction();
     id<MTLFunction> getBlitFragmentFunction(BlitFunctionKey key);

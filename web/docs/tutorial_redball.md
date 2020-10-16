@@ -58,7 +58,7 @@ produce two cubemap files: a mipmapped IBL and a blurry skybox.
 Download [pillars_2k.hdr], then invoke the following command in your terminal.
 
 ```bash
-cmgen -x . --format=ktx --size=256 --extract-blur=0.1 pillars_2k.hdr
+cmgen -x pillars_2k --format=ktx --size=256 --extract-blur=0.1 pillars_2k.hdr
 ```
 
 You should now have a `pillars_2k` folder containing a couple KTX files for the IBL and skybox, as
@@ -103,7 +103,7 @@ class App {
 
     this.swapChain = engine.createSwapChain();
     this.renderer = engine.createRenderer();
-    this.camera = engine.createCamera();
+    this.camera = engine.createCamera(Filament.EntityManager.get().create());
     this.view = engine.createView();
     this.view.setCamera(this.camera);
     this.view.setScene(scene);
@@ -309,7 +309,7 @@ available [here](tutorial_redball.js).
 In the [next tutorial], we'll take a closer look at textures and interaction.
 
 [pillars_2k.hdr]:
-//github.com/google/filament/blob/master/third_party/environments/pillars_2k.hdr
+//github.com/google/filament/blob/main/third_party/environments/pillars_2k.hdr
 
 [next tutorial]: tutorial_suzanne.html
 [previous tutorial]: tutorial_triangle.html

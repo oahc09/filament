@@ -26,17 +26,12 @@
 #include <utils/compiler.h>
 
 namespace filament {
-namespace details {
 
 class FEngine;
 class FStream;
 
 class FTexture : public Texture {
 public:
-    static bool isTextureFormatSupported(FEngine& engine, InternalFormat format) noexcept;
-    static size_t computeTextureDataSize(Texture::Format format, Texture::Type type,
-            size_t stride, size_t height, size_t alignment) noexcept;
-
     FTexture(FEngine& engine, const Builder& builder);
 
     // frees driver resources, object becomes invalid
@@ -48,23 +43,29 @@ public:
     size_t getHeight(size_t level = 0) const noexcept;
     size_t getDepth(size_t level = 0) const noexcept;
     size_t getLevelCount() const noexcept { return mLevelCount; }
-    size_t getMaxLevelCount() const noexcept { return std::ilogbf(std::max(mWidth, mHeight)) + 1; }
+    size_t getMaxLevelCount() const noexcept { return FTexture::maxLevelCount(mWidth, mHeight); }
     Sampler getTarget() const noexcept { return mTarget; }
     InternalFormat getFormat() const noexcept { return mFormat; }
     Usage getUsage() const noexcept { return mUsage; }
 
     void setImage(FEngine& engine, size_t level,
             uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
-            PixelBufferDescriptor&& buffer) const noexcept;
+            PixelBufferDescriptor&& buffer) const;
 
     void setImage(FEngine& engine, size_t level,
-            PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets) const noexcept;
+            uint32_t xoffset, uint32_t yoffset, uint32_t zoffset,
+            uint32_t width, uint32_t height, uint32_t depth,
+            PixelBufferDescriptor&& buffer) const;
+
+    void setImage(FEngine& engine, size_t level,
+            PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets) const;
 
     void generatePrefilterMipmap(FEngine& engine,
             PixelBufferDescriptor&& buffer, const FaceOffsets& faceOffsets,
             PrefilterOptions const* options);
 
     void setExternalImage(FEngine& engine, void* image) noexcept;
+    void setExternalImage(FEngine& engine, void* image, size_t plane) noexcept;
     void setExternalStream(FEngine& engine, FStream* stream) noexcept;
 
     void generateMipmaps(FEngine& engine) const noexcept;
@@ -78,14 +79,41 @@ public:
 
     FStream const* getStream() const noexcept { return mStream; }
 
+    /*
+     * Utilities
+     */
+
+    // synchronous call to the backend. returns whether a backend supports a particular format.
+    static bool isTextureFormatSupported(FEngine& engine, InternalFormat format) noexcept;
+
+    // storage needed on the CPU side for texture data uploads
+    static size_t computeTextureDataSize(Texture::Format format, Texture::Type type,
+            size_t stride, size_t height, size_t alignment) noexcept;
+
+    // Size a of a pixel in bytes for the given format
     static size_t getFormatSize(InternalFormat format) noexcept;
 
-    static inline size_t valueForLevel(size_t level, size_t value) {
-        return std::max(size_t(1), value >> level);
+    // Returns the with or height for a given mipmap level from the base value.
+    static inline size_t valueForLevel(uint8_t level, size_t baseLevelValue) {
+        return std::max(size_t(1), baseLevelValue >> level);
     }
+
+    // Returns the max number of levels for a texture of given max dimensions
+    static inline uint8_t maxLevelCount(uint32_t maxDimension) noexcept {
+        return std::max(1, std::ilogbf(maxDimension) + 1);
+    }
+
+    // Returns the max number of levels for a texture of given dimensions
+    static inline uint8_t maxLevelCount(uint32_t width, uint32_t height) noexcept {
+        return std::max(1, std::ilogbf(std::max(width, height)) + 1);
+    }
+
+    static bool validatePixelFormatAndType(backend::TextureFormat internalFormat,
+            backend::PixelDataFormat format, backend::PixelDataType type) noexcept;
 
 private:
     friend class Texture;
+    FStream* mStream = nullptr;
     backend::Handle<backend::HwTexture> mHandle;
     uint32_t mWidth = 1;
     uint32_t mHeight = 1;
@@ -94,14 +122,12 @@ private:
     Sampler mTarget = Sampler::SAMPLER_2D;
     uint8_t mLevelCount = 1;
     uint8_t mSampleCount = 1;
-    FStream* mStream = nullptr;
     Usage mUsage = Usage::DEFAULT;
 };
 
 
 FILAMENT_UPCAST(Texture)
 
-} // namespace details
 } // namespace filament
 
 #endif // TNT_FILAMENT_DETAILS_TEXTURE_H

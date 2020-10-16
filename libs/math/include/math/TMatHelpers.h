@@ -23,8 +23,6 @@
 
 #include <algorithm>        // for std::swap
 #include <cmath>            // for std:: namespace
-#include <iostream>         // for operator<<
-#include <iomanip>          // for std::setw
 
 #include <math.h>
 #include <stdint.h>
@@ -798,37 +796,6 @@ public:
 
     TQuaternion <T> toQuaternion() const {
         return matrix::extractQuat(static_cast<const BASE<T>&>(*this));
-    }
-};
-
-
-template<template<typename T> class BASE, typename T>
-class TMatDebug {
-private:
-    friend std::ostream& operator<<(std::ostream& stream, const BASE<T>& m) {
-        for (size_t row = 0; row < BASE<T>::NUM_ROWS; ++row) {
-            if (row != 0) {
-                stream << std::endl;
-            }
-            if (row == 0) {
-                stream << "/ ";
-            } else if (row == BASE<T>::NUM_ROWS - 1) {
-                stream << "\\ ";
-            } else {
-                stream << "| ";
-            }
-            for (size_t col = 0; col < BASE<T>::NUM_COLS; ++col) {
-                stream << std::setw(10) << std::to_string(m[col][row]);
-            }
-            if (row == 0) {
-                stream << " \\";
-            } else if (row == BASE<T>::NUM_ROWS - 1) {
-                stream << " /";
-            } else {
-                stream << " |";
-            }
-        }
-        return stream;
     }
 };
 

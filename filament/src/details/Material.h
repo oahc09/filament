@@ -37,8 +37,6 @@ namespace filament {
 
 class MaterialParser;
 
-namespace details {
-
 class  FEngine;
 
 class FMaterial : public Material {
@@ -65,18 +63,19 @@ public:
     }
 
     // Create an instance of this material
-    FMaterialInstance* createInstance() const noexcept;
+    FMaterialInstance* createInstance(const char* name) const noexcept;
 
     bool hasParameter(const char* name) const noexcept;
+
+    bool isSampler(const char* name) const noexcept;
+
+    UniformInterfaceBlock::UniformInfo const* reflect(utils::StaticString const& name) const noexcept;
 
     FMaterialInstance const* getDefaultInstance() const noexcept { return &mDefaultInstance; }
     FMaterialInstance* getDefaultInstance() noexcept { return &mDefaultInstance; }
 
     FEngine& getEngine() const noexcept  { return mEngine; }
 
-    backend::Handle<backend::HwProgram> getProgramSlow(uint8_t variantKey) const noexcept;
-    backend::Handle<backend::HwProgram> getSurfaceProgramSlow(uint8_t variantKey) const noexcept;
-    backend::Handle<backend::HwProgram> getPostProcessProgramSlow(uint8_t variantKey) const noexcept;
     backend::Handle<backend::HwProgram> getProgram(uint8_t variantKey) const noexcept {
 #if FILAMENT_ENABLE_MATDBG
         if (UTILS_UNLIKELY(mPendingEdits.load())) {
@@ -115,10 +114,16 @@ public:
     float getMaskThreshold() const noexcept { return mMaskThreshold; }
     bool hasShadowMultiplier() const noexcept { return mHasShadowMultiplier; }
     AttributeBitset getRequiredAttributes() const noexcept { return mRequiredAttributes; }
+    RefractionMode getRefractionMode() const noexcept { return mRefractionMode; }
+    RefractionType getRefractionType() const noexcept { return mRefractionType; }
 
     bool hasSpecularAntiAliasing() const noexcept { return mSpecularAntiAliasing; }
     float getSpecularAntiAliasingVariance() const noexcept { return mSpecularAntiAliasingVariance; }
     float getSpecularAntiAliasingThreshold() const noexcept { return mSpecularAntiAliasingThreshold; }
+
+    bool hasMaterialProperty(Property property) const noexcept {
+        return bool(mMaterialProperties & uint64_t(property));
+    }
 
     size_t getParameterCount() const noexcept {
         return mUniformInterfaceBlock.getUniformInfoList().size() +
@@ -144,34 +149,41 @@ public:
             size_t packageSize);
 
     /** Queries the program cache to check which variants are resident. */
-    static void onQueryCallback(void* userdata, uint16_t* variants);
+    static void onQueryCallback(void* userdata, uint64_t* pVariants);
 
     /** @}*/
 
     static MaterialParser* createParser(backend::Backend backend, const void* data, size_t size);
 
 private:
+    backend::Handle<backend::HwProgram> getProgramSlow(uint8_t variantKey) const noexcept;
+    backend::Handle<backend::HwProgram> getSurfaceProgramSlow(uint8_t variantKey) const noexcept;
+    backend::Handle<backend::HwProgram> getPostProcessProgramSlow(uint8_t variantKey) const noexcept;
+
     // try to order by frequency of use
     mutable std::array<backend::Handle<backend::HwProgram>, VARIANT_COUNT> mCachedPrograms;
 
     backend::RasterState mRasterState;
-    BlendingMode mRenderBlendingMode;
-    TransparencyMode mTransparencyMode;
-    bool mIsVariantLit;
-    Shading mShading;
+    BlendingMode mRenderBlendingMode = BlendingMode::OPAQUE;
+    TransparencyMode mTransparencyMode = TransparencyMode::DEFAULT;
+    bool mIsVariantLit = false;
+    Shading mShading = Shading::UNLIT;
 
-    BlendingMode mBlendingMode;
-    Interpolation mInterpolation;
-    VertexDomain mVertexDomain;
-    MaterialDomain mMaterialDomain;
-    CullingMode mCullingMode;
+    BlendingMode mBlendingMode = BlendingMode::OPAQUE;
+    Interpolation mInterpolation = Interpolation::SMOOTH;
+    VertexDomain mVertexDomain = VertexDomain::OBJECT;
+    MaterialDomain mMaterialDomain = MaterialDomain::SURFACE;
+    CullingMode mCullingMode = CullingMode::NONE;
     AttributeBitset mRequiredAttributes;
+    RefractionMode mRefractionMode = RefractionMode::NONE;
+    RefractionType mRefractionType = RefractionType::SOLID;
+    uint64_t mMaterialProperties = 0;
 
     float mMaskThreshold = 0.4f;
-    float mSpecularAntiAliasingVariance;
-    float mSpecularAntiAliasingThreshold;
+    float mSpecularAntiAliasingVariance = 0.0f;
+    float mSpecularAntiAliasingThreshold = 0.0f;
 
-    bool mDoubleSided;
+    bool mDoubleSided = false;
     bool mDoubleSidedCapability = false;
     bool mHasShadowMultiplier = false;
     bool mHasCustomDepthShader = false;
@@ -194,7 +206,6 @@ private:
 
 FILAMENT_UPCAST(Material)
 
-} // namespace details
 } // namespace filament
 
 #endif // TNT_FILAMENT_DETAILS_MATERIAL_H

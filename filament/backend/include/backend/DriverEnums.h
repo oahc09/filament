@@ -59,19 +59,42 @@ enum class Backend : uint8_t {
     NOOP = 4,     //!< Selects the no-op driver for testing purposes.
 };
 
+static constexpr const char* backendToString(backend::Backend backend) {
+    switch (backend) {
+        case backend::Backend::NOOP:
+            return "Noop";
+        case backend::Backend::OPENGL:
+            return "OpenGL";
+        case backend::Backend::VULKAN:
+            return "Vulkan";
+        case backend::Backend::METAL:
+            return "Metal";
+        default:
+            return "Unknown";
+    }
+}
+
 /**
  * Bitmask for selecting render buffers
  */
 enum class TargetBufferFlags : uint8_t {
     NONE = 0x0u,                            //!< No buffer selected.
-    COLOR = 0x1u,                           //!< Color buffer selected.
-    DEPTH = 0x2u,                           //!< Depth buffer selected.
-    STENCIL = 0x4u,                         //!< Stencil buffer selected.
-    COLOR_AND_DEPTH = COLOR | DEPTH,        //!< Color and depth buffer selected.
-    COLOR_AND_STENCIL = COLOR | STENCIL,    //!< Color and stencil buffer selected.
+    COLOR0 = 0x1u,                          //!< Color buffer selected.
+    COLOR1 = 0x2u,                          //!< Color buffer selected.
+    COLOR2 = 0x4u,                          //!< Color buffer selected.
+    COLOR3 = 0x8u,                          //!< Color buffer selected.
+    COLOR = COLOR0,                         //!< \deprecated
+    COLOR_ALL = COLOR0 | COLOR1 | COLOR2 | COLOR3,
+    DEPTH = 0x10u,                          //!< Depth buffer selected.
+    STENCIL = 0x20u,                        //!< Stencil buffer selected.
     DEPTH_AND_STENCIL = DEPTH | STENCIL,    //!< depth and stencil buffer selected.
-    ALL = COLOR | DEPTH | STENCIL           //!< Color, depth and stencil buffer selected.
+    ALL = COLOR_ALL | DEPTH | STENCIL       //!< Color, depth and stencil buffer selected.
 };
+
+inline TargetBufferFlags getMRTColorFlag(size_t index) noexcept {
+    assert(index < 4);
+    return TargetBufferFlags(1u << index);
+}
 
 /**
  * Frequency at which a buffer is expected to be modified and used. This is used as an hint
@@ -99,6 +122,14 @@ struct Viewport {
 };
 
 /**
+ * Specifies the mapping of the near and far clipping plane to window coordinates.
+ */
+struct DepthRange {
+    float near = 0.0f;    //!< mapping of the near plane to window coordinates.
+    float far = 1.0f;     //!< mapping of the far plane to window coordinates.
+};
+
+/**
  * Error codes for Fence::wait()
  * @see Fence, Fence::wait()
  */
@@ -106,6 +137,15 @@ enum class FenceStatus : int8_t {
     ERROR = -1,                 //!< An error occured. The Fence condition is not satisfied.
     CONDITION_SATISFIED = 0,    //!< The Fence condition is satisfied.
     TIMEOUT_EXPIRED = 1,        //!< wait()'s timeout expired. The Fence condition is not satisfied.
+};
+
+/**
+ * Status codes for sync objects
+ */
+enum class SyncStatus : int8_t {
+    ERROR = -1,          //!< An error occured. The Sync is not signaled.
+    SIGNALED = 0,        //!< The Sync is signaled.
+    NOT_SIGNALED = 1,    //!< The Sync is not signaled yet
 };
 
 static constexpr uint64_t FENCE_WAIT_FOR_EVER = uint64_t(-1);
@@ -168,9 +208,11 @@ enum class Precision : uint8_t {
 
 //! Texture sampler type
 enum class SamplerType : uint8_t {
-    SAMPLER_2D,         //!< 2D or 2D array texture
+    SAMPLER_2D,         //!< 2D texture
+    SAMPLER_2D_ARRAY,   //!< 2D array texture
     SAMPLER_CUBEMAP,    //!< Cube map texture
     SAMPLER_EXTERNAL,   //!< External texture
+    SAMPLER_3D,         //!< 3D texture
 };
 
 //! Texture sampler format
@@ -239,16 +281,18 @@ enum class PixelDataFormat : uint8_t {
 
 //! Pixel Data Type
 enum class PixelDataType : uint8_t {
-    UBYTE,          //!< unsigned byte
-    BYTE,           //!< signed byte
-    USHORT,         //!< unsigned short (16-bits)
-    SHORT,          //!< signed short (16-bits)
-    UINT,           //!< unsigned int (32-bits)
-    INT,            //!< signed int (32-bits)
-    HALF,           //!< half-float (16-bits float)
-    FLOAT,          //!< float (32-bits float)
-    COMPRESSED,     //!< compressed pixels, @see CompressedPixelDataType
-    UINT_10F_11F_11F_REV    //!< three low precision floating-point numbers
+    UBYTE,                //!< unsigned byte
+    BYTE,                 //!< signed byte
+    USHORT,               //!< unsigned short (16-bit)
+    SHORT,                //!< signed short (16-bit)
+    UINT,                 //!< unsigned int (16-bit)
+    INT,                  //!< signed int (32-bit)
+    HALF,                 //!< half-float (16-bit float)
+    FLOAT,                //!< float (32-bits float)
+    COMPRESSED,           //!< compressed pixels, @see CompressedPixelDataType
+    UINT_10F_11F_11F_REV, //!< three low precision floating-point numbers
+    USHORT_565,           //!< unsigned int (16-bit), encodes 3 RGB channels
+    UINT_2_10_10_10_REV,  //!< unsigned normalized 10 bits RGB, 2 bits alpha
 };
 
 //! Compressed pixel data types
@@ -261,6 +305,7 @@ enum class CompressedPixelDataType : uint16_t {
 
     // Available everywhere except Android/iOS
     DXT1_RGB, DXT1_RGBA, DXT3_RGBA, DXT5_RGBA,
+    DXT1_SRGB, DXT1_SRGBA, DXT3_SRGBA, DXT5_SRGBA,
 
     // ASTC formats are available with a GLES extension
     RGBA_ASTC_4x4,
@@ -414,6 +459,7 @@ enum class TextureFormat : uint16_t {
 
     // Available everywhere except Android/iOS
     DXT1_RGB, DXT1_RGBA, DXT3_RGBA, DXT5_RGBA,
+    DXT1_SRGB, DXT1_SRGBA, DXT3_SRGBA, DXT5_SRGBA,
 
     // ASTC formats are available with a GLES extension
     RGBA_ASTC_4x4,
@@ -448,13 +494,38 @@ enum class TextureFormat : uint16_t {
 
 //! Bitmask describing the intended Texture Usage
 enum class TextureUsage : uint8_t {
-    COLOR_ATTACHMENT    = 0x1,  //!< Texture can be used as a color attachment
-    DEPTH_ATTACHMENT    = 0x2,  //!< Texture can be used as a depth attachment
-    STENCIL_ATTACHMENT  = 0x4,  //!< Texture can be used as a stencil attachment
-    UPLOADABLE          = 0x8,  //!< Data can be uploaded into this texture (default)
-    SAMPLEABLE          = 0x10, //!< Texture can be sampled (default)
-    DEFAULT = UPLOADABLE | SAMPLEABLE   //!< Default texture usage
+    COLOR_ATTACHMENT    = 0x1,                      //!< Texture can be used as a color attachment
+    DEPTH_ATTACHMENT    = 0x2,                      //!< Texture can be used as a depth attachment
+    STENCIL_ATTACHMENT  = 0x4,                      //!< Texture can be used as a stencil attachment
+    UPLOADABLE          = 0x8,                      //!< Data can be uploaded into this texture (default)
+    SAMPLEABLE          = 0x10,                     //!< Texture can be sampled (default)
+    SUBPASS_INPUT       = 0x20,                     //!< Texture can be used as a subpass input
+    DEFAULT             = UPLOADABLE | SAMPLEABLE   //!< Default texture usage
 };
+
+//! Texture swizzle
+enum class TextureSwizzle {
+    SUBSTITUTE_ZERO,
+    SUBSTITUTE_ONE,
+    CHANNEL_0,
+    CHANNEL_1,
+    CHANNEL_2,
+    CHANNEL_3
+};
+
+//! returns whether this format a depth format
+static constexpr bool isDepthFormat(TextureFormat format) noexcept {
+    switch (format) {
+        case TextureFormat::DEPTH32F:
+        case TextureFormat::DEPTH24:
+        case TextureFormat::DEPTH16:
+        case TextureFormat::DEPTH32F_STENCIL8:
+        case TextureFormat::DEPTH24_STENCIL8:
+            return true;
+        default:
+            return false;
+    }
+}
 
 //! returns whether this format a compressed format
 static constexpr bool isCompressedFormat(TextureFormat format) noexcept {
@@ -468,7 +539,11 @@ static constexpr bool isETC2Compression(TextureFormat format) noexcept {
 
 //! returns whether this format is an ETC3 compressed format
 static constexpr bool isS3TCCompression(TextureFormat format) noexcept {
-    return format >= TextureFormat::DXT1_RGB && format <= TextureFormat::DXT5_RGBA;
+    return format >= TextureFormat::DXT1_RGB && format <= TextureFormat::DXT5_SRGBA;
+}
+
+static constexpr bool isS3TCSRGBCompression(TextureFormat format) noexcept {
+    return format >= TextureFormat::DXT1_SRGB && format <= TextureFormat::DXT5_SRGBA;
 }
 
 //! Texture Cubemap Face
@@ -624,6 +699,16 @@ enum class BlendFunction : uint8_t {
     SRC_ALPHA_SATURATE      //!< f(src, dst) = (1,1,1) * min(src.a, 1 - dst.a), 1
 };
 
+//! Stream for external textures
+enum class StreamType {
+    NATIVE,     //!< Not synchronized but copy-free. Good for video.
+    TEXTURE_ID, //!< Synchronized, but GL-only and incurs copies. Good for AR on devices before API 26.
+    ACQUIRED,   //!< Synchronized, copy-free, and take a release callback. Good for AR but requires API 26+.
+};
+
+//! Releases an ACQUIRED external texture, guaranteed to be called on the application thread.
+using StreamCallback = void(*)(void* image, void* user);
+
 //! Vertex attribute descriptor
 struct Attribute {
     //! attribute is normalized (remapped between 0 and 1)
@@ -673,8 +758,7 @@ struct RasterState {
 
     // note: clang reduces this entire function to a simple load/mask/compare
     bool hasBlending() const noexcept {
-        // there could be other cases where blending would end-up being disabled,
-        // but this is common and easy to check
+        // This is used to decide if blending needs to be enabled in the h/w
         return !(blendEquationRGB == BlendEquation::ADD &&
                  blendEquationAlpha == BlendEquation::ADD &&
                  blendFunctionSrcRGB == BlendFunction::ONE &&
@@ -757,9 +841,6 @@ struct RenderPassFlags {
      * Discarded buffers' content becomes invalid, they must not be read from again.
      */
     TargetBufferFlags discardEnd;
-
-    //! whether to ignore the scissor test during the clear operation
-    bool ignoreScissor;
 };
 
 /**
@@ -769,18 +850,26 @@ struct RenderPassParams {
     RenderPassFlags flags{};    //!< operations performed on the buffers for this pass
 
     Viewport viewport{};        //!< viewport for this pass
+    DepthRange depthRange{};    //!< depth range for this pass
 
     //! Color to use to clear the COLOR buffer. RenderPassFlags::clear must be set.
     filament::math::float4 clearColor = {};
 
     //! Depth value to clear the depth buffer with
-    double clearDepth = 1.0;
+    double clearDepth = 0.0;
 
     //! Stencil value to clear the stencil buffer with
     uint32_t clearStencil = 0;
 
-    //! reserved, must be zero
-    uint32_t reserved1 = 0;
+    /**
+     * The subpass mask specifies which color attachments are designated for read-back in the second
+     * subpass. If this is zero, the render pass has only one subpass. The least significant bit
+     * specifies that the first color attachment in the render target is a subpass input.
+     *
+     * For now only 2 subpasses are supported, so only the lower 4 bits are used, one for each color
+     * attachment (see MRT::TARGET_COUNT).
+     */
+    uint32_t subpassMask = 0;
 };
 
 struct PolygonOffset {

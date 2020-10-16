@@ -28,7 +28,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutorService;
 import java.nio.ByteBuffer;
 
-import android.support.annotation.NonNull;
+import androidx.annotation.NonNull;
 
 
 /**
@@ -136,7 +136,7 @@ public class FilamentPanel extends JPanel implements FilamentTarget {
      */
     public boolean beginFrame(@NonNull Engine engine, @NonNull Renderer renderer) {
         ensureSurface(engine);
-        return renderer.beginFrame(mSwapChain);
+        return renderer.beginFrame(mSwapChain, 0L);
     }
 
 

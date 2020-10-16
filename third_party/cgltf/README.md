@@ -1,11 +1,14 @@
-# cgltf
+# :diamond_shape_with_a_dot_inside: cgltf
 **Single-file/stb-style C glTF loader and writer**
 
 [![Build Status](https://travis-ci.org/jkuhlmann/cgltf.svg?branch=master)](https://travis-ci.org/jkuhlmann/cgltf)
 
+Used in: [bgfx](https://github.com/bkaradzic/bgfx), [Filament](https://github.com/google/filament), [meshoptimizer](https://github.com/zeux/meshoptimizer), [raylib](https://github.com/raysan5/raylib), and more!
+
 ## Usage: Loading
 Loading from file:
 ```c
+#define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
 cgltf_options options = {0};
@@ -20,6 +23,7 @@ if (result == cgltf_result_success)
 
 Loading from memory:
 ```c
+#define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
 void* buf; /* Pointer to glb or gltf file data */
@@ -45,6 +49,8 @@ When writing glTF data, you need a valid `cgltf_data` structure that represents 
 
 Writing to file:
 ```c
+#define CGLTF_IMPLEMENTATION
+#define CGLTF_WRITE_IMPLEMENTATION
 #include "cgltf_write.h"
 
 cgltf_options options = {0};
@@ -58,6 +64,8 @@ if (result != cgltf_result_success)
 
 Writing to memory:
 ```c
+#define CGLTF_IMPLEMENTATION
+#define CGLTF_WRITE_IMPLEMENTATION
 #include "cgltf_write.h"
 cgltf_options options = {0};
 cgltf_data* data = /* TODO must be valid data */;
@@ -93,12 +101,17 @@ cgltf supports core glTF 2.0:
 - extras data
 
 cgltf also supports some glTF extensions:
+- KHR_draco_mesh_compression (requires a library like [Google's Draco](https://github.com/google/draco) for decompression though)
 - KHR_lights_punctual
+- KHR_materials_clearcoat
+- KHR_materials_ior
 - KHR_materials_pbrSpecularGlossiness
+- KHR_materials_specular
+- KHR_materials_transmission
 - KHR_materials_unlit
 - KHR_texture_transform
 
-cgltf does **not** yet support unlisted extensions.
+cgltf does **not** yet support unlisted extensions. However, unlisted extensions can be accessed via "extensions" member on objects.
 
 ## Building
 The easiest approach is to integrate the `cgltf.h` header file into your project. If you are unfamiliar with single-file C libraries (also known as stb-style libraries), this is how it goes:

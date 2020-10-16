@@ -20,8 +20,22 @@ a:hover, a.current {
     color: #07f;
 }
 
+a.rebuild {
+    color: #e4e682;
+}
+
+span.warning {
+    color: black;
+    background: orange;
+    font-size: small;
+}
+
 a.inactive {
     color: #aaa;
+}
+
+a.inactive.current {
+    color: #5af;
 }
 
 pre {
@@ -47,7 +61,7 @@ pre {
 }
 
 .stretchy {
-    flex-grow: 4;
+    flex-grow: 1;
 }
 
 .hbox {

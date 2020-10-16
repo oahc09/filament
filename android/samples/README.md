@@ -15,6 +15,12 @@ Demonstrates how to create a light and a mesh with the attributes required for l
 
 ![Lit Cube](../../docs/images/samples/sample_lit_cube.jpg)
 
+### `live-wallpaper`
+
+Demonstrates how to use Filament as renderer for an Android Live Wallpaper.
+
+![Live Wallpaper](../../docs/images/samples/example_live_wallpaper.jpg)
+
 ### `image-based-lighting`
 
 Demonstrates how to create image-based lights and load complex meshes:
@@ -41,22 +47,38 @@ Demonstrates how to render into a `TextureView` instead of a `SurfaceView`:
 
 ### `material-builder`
 
-Demonstrates how to programatically generate Filament materials, as opposed to compiling them on the
-host machine:
+Demonstrates how to programmatically generate Filament materials, as opposed to compiling them on
+the host machine:
 
 ![Material Builder](../../docs/images/samples/sample_image_based_lighting.jpg)
 
-### `gltf-bloom`
+### `gltf-viewer`
 
-Demonstrates how to load glTF models and render to an offscreen buffer:
+Demonstrates how to load glTF models and use the camera manipulator:
 
-![glTF Bloom](../../docs/images/samples/sample_gltf_bloom.jpg)
+![glTF Viewer](../../docs/images/samples/sample_gltf_viewer.jpg)
 
 ### `hello-camera`
 
 Demonstrates how to use `Stream` with Android's Camera2 API:
 
 ![Hello Camera](../../docs/images/samples/sample_hello_camera.jpg)
+
+### `page-curl`
+
+Pure Java app that demonstrates custom vertex shader animation and two-sided texturing.
+Applies the deformation described in "Deforming Pages of Electronic Books" by Hong et al.
+Users can drag horizontally to turn the page.
+
+![Page Curl](../../docs/images/samples/sample_page_curl.jpg)
+
+### `stream-test`
+
+Tests the various ways to interact with `Stream` by drawing into an external texture using Canvas.
+See the following screenshot; if the two sets of stripes are perfectly aligned, then the Filament
+frame and the external texture are perfectly synchronized.
+
+![Stream Test](../../docs/images/samples/sample_stream_test.jpg)
 
 ## Prerequisites
 
@@ -84,14 +106,15 @@ $ ./gradlew -Pfilament_tools_dir=../../dist-release assembleDebug
 
 ## Important: SDK location
 
-
-Either ensure your `ANDROID_HOME` environment variable is set or make sure each project contains a
-`local.properties` file with the `sdk.dir` property pointing to your installation of the Android
-SDK. This includes the project `filament-android` in the parent directory.
+Either ensure your `ANDROID_HOME` environment variable is set or make sure the root project
+contains a `local.properties` file with the `sdk.dir` property pointing to your installation of
+the Android SDK.
 
 ## Android Studio
 
-You must use Android Studio 3.3 or higher to open these projects.
+You must use Android Studio 3.6 RC 1 or higher. To open the project, point Studio to the `android`
+folder. After opening the project and syncing to gradle, select the sample of your choice using the
+drop-down widget in the toolbar.
 
 ## Compiling
 

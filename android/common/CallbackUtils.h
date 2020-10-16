@@ -23,20 +23,17 @@
 
 #include <filament/Engine.h>
 
-struct JniCallback {
-    static JniCallback* make(filament::Engine* engine,
-            JNIEnv* env, jobject handler, jobject callback);
-
-    static void invoke(void* buffer, size_t n, void* user);
-
-private:
-    JniCallback(JNIEnv* env, jobject handler, jobject callback);
-    ~JniCallback();
-
-    JNIEnv* mEnv;
-    jobject mHandler;
-    jobject mCallback;
+struct CallbackJni {
+#ifdef ANDROID
+    jclass handlerClass = nullptr;
+    jmethodID post = nullptr;
+#endif
+    jclass executorClass = nullptr;
+    jmethodID execute = nullptr;
 };
+
+void acquireCallbackJni(JNIEnv* env, CallbackJni& callbackUtils);
+void releaseCallbackJni(JNIEnv* env, CallbackJni callbackUtils, jobject handler, jobject callback);
 
 struct JniBufferCallback {
     static JniBufferCallback* make(filament::Engine* engine,
@@ -46,10 +43,32 @@ struct JniBufferCallback {
 
 private:
     JniBufferCallback(JNIEnv* env, jobject handler, jobject callback, AutoBuffer&& buffer);
+    JniBufferCallback(JniBufferCallback const &) = delete;
+    JniBufferCallback(JniBufferCallback&&) = delete;
     ~JniBufferCallback();
 
     JNIEnv* mEnv;
     jobject mHandler;
     jobject mCallback;
     AutoBuffer mBuffer;
+    CallbackJni mCallbackUtils;
+};
+
+struct JniImageCallback {
+    static JniImageCallback* make(filament::Engine* engine, JNIEnv* env, jobject handler,
+            jobject runnable, long image);
+
+    static void invoke(void* image, void* user);
+
+private:
+    JniImageCallback(JNIEnv* env, jobject handler, jobject runnable, long image);
+    JniImageCallback(JniBufferCallback const &) = delete;
+    JniImageCallback(JniBufferCallback&&) = delete;
+    ~JniImageCallback();
+
+    JNIEnv* mEnv;
+    jobject mHandler;
+    jobject mCallback;
+    long mImage;
+    CallbackJni mCallbackUtils;
 };

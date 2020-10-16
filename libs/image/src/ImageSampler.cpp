@@ -342,9 +342,9 @@ void generateMipmaps(const LinearImage& source, Filter filter, LinearImage* resu
     uint32_t width = source.getWidth();
     uint32_t height = source.getHeight();
     for (uint32_t n = 0; n < mips; ++n) {
-       width = std::max(width >> 1u, 1u);
-       height = std::max(height >> 1u, 1u);
-       result[n] = resampleImage(source, width, height, filter);
+        width = std::max(width >> 1u, 1u);
+        height = std::max(height >> 1u, 1u);
+        result[n] = resampleImage(source, width, height, filter);
     }
 }
 
@@ -362,7 +362,7 @@ uint32_t getMipmapCount(const LinearImage& source) {
 
 Filter filterFromString(const char* rawname) {
     using namespace utils;
-    using namespace std;
+    using std::unordered_map;
     static const unordered_map<StaticString, Filter> map = {
         { "BOX", Filter::BOX},
         { "NEAREST", Filter::NEAREST},
@@ -373,7 +373,7 @@ Filter filterFromString(const char* rawname) {
         { "LANCZOS", Filter::LANCZOS},
         { "MINIMUM", Filter::MINIMUM},
     };
-    string name = rawname;
+    std::string name = rawname;
     for (auto& c: name) { c = toupper((unsigned char)c); }
     auto iter = map.find(StaticString::make(name.c_str(), name.size()));
     return iter == map.end() ? Filter::DEFAULT : iter->second;

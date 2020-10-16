@@ -15,7 +15,9 @@
  */
 
 #include <filament/Camera.h>
+#include <filament/ColorGrading.h>
 #include <filament/Color.h>
+#include <filament/Frustum.h>
 #include <filament/IndexBuffer.h>
 #include <filament/LightManager.h>
 #include <filament/RenderableManager.h>
@@ -112,22 +114,50 @@ enum_<RenderableManager::PrimitiveType>("RenderableManager$PrimitiveType")
     .value("TRIANGLES", RenderableManager::PrimitiveType::TRIANGLES)
     .value("NONE", RenderableManager::PrimitiveType::NONE);
 
+enum_<View::QualityLevel>("View$QualityLevel")
+    .value("LOW", View::QualityLevel::LOW)
+    .value("MEDIUM", View::QualityLevel::MEDIUM)
+    .value("HIGH", View::QualityLevel::HIGH)
+    .value("ULTRA", View::QualityLevel::ULTRA);
+
+enum_<View::AmbientOcclusion>("View$AmbientOcclusion")
+    .value("NONE", View::AmbientOcclusion::NONE)
+    .value("SSAO", View::AmbientOcclusion::SSAO);
+
+enum_<View::BlendMode>("View$BlendMode")
+    .value("OPAQUE", View::BlendMode::OPAQUE)
+    .value("TRANSLUCENT", View::BlendMode::TRANSLUCENT);
+
+enum_<View::BloomOptions::BlendMode>("View$BloomOptions$BlendMode")
+    .value("ADD", View::BloomOptions::BlendMode::ADD)
+    .value("INTERPOLATE", View::BloomOptions::BlendMode::INTERPOLATE);
+
 enum_<View::AntiAliasing>("View$AntiAliasing")
     .value("NONE", View::AntiAliasing::NONE)
     .value("FXAA", View::AntiAliasing::FXAA);
 
-enum_<View::DepthPrepass>("View$DepthPrepass")
-    .value("DEFAULT", View::DepthPrepass::DEFAULT)
-    .value("DISABLED", View::DepthPrepass::DISABLED)
-    .value("ENABLED", View::DepthPrepass::ENABLED);
+enum_<Camera::Fov>("Camera$Fov")
+    .value("VERTICAL", Camera::Fov::VERTICAL)
+    .value("HORIZONTAL", Camera::Fov::HORIZONTAL);
 
 enum_<Camera::Projection>("Camera$Projection")
     .value("PERSPECTIVE", Camera::Projection::PERSPECTIVE)
     .value("ORTHO", Camera::Projection::ORTHO);
 
-enum_<Camera::Fov>("Camera$Fov")
-    .value("VERTICAL", Camera::Fov::VERTICAL)
-    .value("HORIZONTAL", Camera::Fov::HORIZONTAL);
+enum_<ColorGrading::QualityLevel>("ColorGrading$QualityLevel")
+    .value("LOW", ColorGrading::QualityLevel::LOW)
+    .value("MEDIUM", ColorGrading::QualityLevel::MEDIUM)
+    .value("HIGH", ColorGrading::QualityLevel::HIGH)
+    .value("ULTRA", ColorGrading::QualityLevel::ULTRA);
+
+enum_<ColorGrading::ToneMapping>("ColorGrading$ToneMapping")
+    .value("LINEAR", ColorGrading::ToneMapping::LINEAR)
+    .value("ACES_LEGACY", ColorGrading::ToneMapping::ACES_LEGACY)
+    .value("ACES", ColorGrading::ToneMapping::ACES)
+    .value("FILMIC", ColorGrading::ToneMapping::FILMIC)
+    .value("UCHIMURA", ColorGrading::ToneMapping::UCHIMURA)
+    .value("REINHARD", ColorGrading::ToneMapping::REINHARD)
+    .value("DISPLAY_RANGE", ColorGrading::ToneMapping::DISPLAY_RANGE);
 
 enum_<Frustum::Plane>("Frustum$Plane")
     .value("LEFT", Frustum::Plane::LEFT)
@@ -247,7 +277,8 @@ enum_<Texture::Usage>("Texture$Usage") // aka backend::TextureUsage
     .value("DEPTH_ATTACHMENT", Texture::Usage::DEPTH_ATTACHMENT)
     .value("STENCIL_ATTACHMENT", Texture::Usage::STENCIL_ATTACHMENT)
     .value("UPLOADABLE", Texture::Usage::UPLOADABLE)
-    .value("SAMPLEABLE", Texture::Usage::SAMPLEABLE);
+    .value("SAMPLEABLE", Texture::Usage::SAMPLEABLE)
+    .value("SUBPASS_INPUT", Texture::Usage::SUBPASS_INPUT);
 
 enum_<Texture::CubemapFace>("Texture$CubemapFace") // aka backend::TextureCubemapFace
     .value("POSITIVE_X", Texture::CubemapFace::POSITIVE_X)
@@ -282,7 +313,9 @@ enum_<backend::PixelDataType>("PixelDataType")
     .value("UINT", backend::PixelDataType::UINT)
     .value("INT", backend::PixelDataType::INT)
     .value("HALF", backend::PixelDataType::HALF)
-    .value("FLOAT", backend::PixelDataType::FLOAT);
+    .value("FLOAT", backend::PixelDataType::FLOAT)
+    .value("UINT_10F_11F_11F_REV", backend::PixelDataType::UINT_10F_11F_11F_REV)
+    .value("USHORT_565", backend::PixelDataType::USHORT_565);
 
 enum_<backend::CompressedPixelDataType>("CompressedPixelDataType")
     .value("EAC_R11", backend::CompressedPixelDataType::EAC_R11)

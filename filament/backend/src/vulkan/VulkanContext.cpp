@@ -22,6 +22,9 @@
 #pragma clang diagnostic ignored "-Wunused-variable"
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
 #pragma clang diagnostic ignored "-Wtautological-compare"
+#pragma clang diagnostic ignored "-Wnullability-completeness"
+#pragma clang diagnostic ignored "-Wweak-vtables"
+#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
 #define VMA_IMPLEMENTATION
 #include <cstdio>
 #include "vk_mem_alloc.h"
@@ -61,8 +64,14 @@ void selectPhysicalDevice(VulkanContext& context) {
         VkPhysicalDevice physicalDevice = physicalDevices[i];
         vkGetPhysicalDeviceProperties(physicalDevice, &context.physicalDeviceProperties);
 
-        // Does the device support Vulkan?
-        if (VK_VERSION_MAJOR(context.physicalDeviceProperties.apiVersion) < 1) {
+        const int major = VK_VERSION_MAJOR(context.physicalDeviceProperties.apiVersion);
+        const int minor = VK_VERSION_MINOR(context.physicalDeviceProperties.apiVersion);
+
+        // Does the device support the required Vulkan level?
+        if (major < VK_REQUIRED_VERSION_MAJOR) {
+            continue;
+        }
+        if (major == VK_REQUIRED_VERSION_MAJOR && minor < VK_REQUIRED_VERSION_MINOR) {
             continue;
         }
 
@@ -116,6 +125,21 @@ void selectPhysicalDevice(VulkanContext& context) {
         vkGetPhysicalDeviceFeatures(physicalDevice, &context.physicalDeviceFeatures);
         vkGetPhysicalDeviceMemoryProperties(physicalDevice, &context.memoryProperties);
 
+        // Print some driver or MoltenVK information if it is available.
+        if (vkGetPhysicalDeviceProperties2KHR) {
+            VkPhysicalDeviceDriverProperties driverProperties = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+            };
+            VkPhysicalDeviceProperties2 physicalDeviceProperties2 = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                .pNext = &driverProperties,
+            };
+            vkGetPhysicalDeviceProperties2KHR(physicalDevice, &physicalDeviceProperties2);
+            utils::slog.i << "Vulkan device driver: "
+                << driverProperties.driverName << " "
+                << driverProperties.driverInfo << utils::io::endl;
+        }
+
         // Print out some properties of the GPU for diagnostic purposes.
         //
         // Ideally, the vendors register their vendor ID's with Khronos so that apps can make an
@@ -132,7 +156,6 @@ void selectPhysicalDevice(VulkanContext& context) {
         // Since we don't have any vendor-specific workarounds yet, there's no need to make this
         // mapping in code. The "deviceName" string informally reveals the marketing name for the
         // GPU. (e.g., Quadro)
-        const uint32_t apiVersion = context.physicalDeviceProperties.apiVersion;
         const uint32_t driverVersion = context.physicalDeviceProperties.driverVersion;
         const uint32_t vendorID = context.physicalDeviceProperties.vendorID;
         const uint32_t deviceID = context.physicalDeviceProperties.deviceID;
@@ -141,21 +164,22 @@ void selectPhysicalDevice(VulkanContext& context) {
                 << "' from " << physicalDeviceCount << " physical devices. "
                 << "(vendor 0x" << utils::io::hex << vendorID << ", "
                 << "device 0x" << deviceID << ", "
-                << "api 0x" << apiVersion << ", "
-                << "driver 0x" << driverVersion << ")"
-                << utils::io::dec << utils::io::endl;
-        break;
+                << "driver 0x" << driverVersion << ", "
+                << utils::io::dec << "api " << major << "." << minor << ")"
+                << utils::io::endl;
+        return;
     }
+    PANIC_POSTCONDITION("Unable to find suitable device.");
 }
 
-void createVirtualDevice(VulkanContext& context) {
+void createLogicalDevice(VulkanContext& context) {
     VkDeviceQueueCreateInfo deviceQueueCreateInfo[1] = {};
-    static const float queuePriority[] = {1.0f};
+    const float queuePriority[] = {1.0f};
     VkDeviceCreateInfo deviceCreateInfo = {};
     std::vector<const char*> deviceExtensionNames = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     };
-    if (context.debugMarkersSupported) {
+    if (context.debugMarkersSupported && !context.debugUtilsSupported) {
         deviceExtensionNames.push_back(VK_EXT_DEBUG_MARKER_EXTENSION_NAME);
     }
     deviceQueueCreateInfo->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -182,6 +206,7 @@ void createVirtualDevice(VulkanContext& context) {
     ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkCreateDevice error.");
     vkGetDeviceQueue(context.device, context.graphicsQueueFamilyIndex, 0,
             &context.graphicsQueue);
+
     VkCommandPoolCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     createInfo.flags =
@@ -190,6 +215,18 @@ void createVirtualDevice(VulkanContext& context) {
     result = vkCreateCommandPool(context.device, &createInfo, VKALLOC, &context.commandPool);
     ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkCreateCommandPool error.");
 
+    // Create a timestamp pool large enough to hold a pair of queries for each timer.
+    VkQueryPoolCreateInfo tqpCreateInfo = {};
+    tqpCreateInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    tqpCreateInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+
+    std::unique_lock<utils::Mutex> timestamps_lock(context.timestamps.mutex);
+    tqpCreateInfo.queryCount = context.timestamps.used.size() * 2;
+    result = vkCreateQueryPool(context.device, &tqpCreateInfo, VKALLOC, &context.timestamps.pool);
+    ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkCreateQueryPool error.");
+    context.timestamps.used.reset();
+    timestamps_lock.unlock();
+
     const VmaVulkanFunctions funcs {
         .vkGetPhysicalDeviceProperties = vkGetPhysicalDeviceProperties,
         .vkGetPhysicalDeviceMemoryProperties = vkGetPhysicalDeviceMemoryProperties,
@@ -197,6 +234,8 @@ void createVirtualDevice(VulkanContext& context) {
         .vkFreeMemory = vkFreeMemory,
         .vkMapMemory = vkMapMemory,
         .vkUnmapMemory = vkUnmapMemory,
+        .vkFlushMappedMemoryRanges = vkFlushMappedMemoryRanges,
+        .vkInvalidateMappedMemoryRanges = vkInvalidateMappedMemoryRanges,
         .vkBindBufferMemory = vkBindBufferMemory,
         .vkBindImageMemory = vkBindImageMemory,
         .vkGetBufferMemoryRequirements = vkGetBufferMemoryRequirements,
@@ -211,7 +250,9 @@ void createVirtualDevice(VulkanContext& context) {
     const VmaAllocatorCreateInfo allocatorInfo {
         .physicalDevice = context.physicalDevice,
         .device = context.device,
-        .pVulkanFunctions = &funcs
+        .pVulkanFunctions = &funcs,
+        .pRecordSettings = nullptr,
+        .instance = context.instance
     };
     vmaCreateAllocator(&allocatorInfo, &context.allocator);
 
@@ -257,14 +298,34 @@ void getPresentationQueue(VulkanContext& context, VulkanSurfaceContext& sc) {
     ASSERT_POSTCONDITION(presentQueueFamilyIndex != 0xffff,
             "This physical device does not support the presentation queue.");
     if (context.graphicsQueueFamilyIndex != presentQueueFamilyIndex) {
+
+        // TODO: Strictly speaking, this code path is incorrect. However it is not triggered on any
+        // Android devices that we've tested with, nor with MoltenVK.
+        //
+        // This is incorrect because we created the logical device early on, before we had a handle
+        // to the rendering surface. Therefore the device was not created with the presentation
+        // queue family index included in VkDeviceQueueCreateInfo.
+        //
+        // This is non-trivial to fix because the driver API allows clients to do certain things
+        // (e.g. upload a vertex buffer) before the swap chain is created.
+        //
+        // https://github.com/google/filament/issues/1532
         vkGetDeviceQueue(context.device, presentQueueFamilyIndex, 0, &sc.presentQueue);
+
     } else {
         sc.presentQueue = context.graphicsQueue;
     }
     ASSERT_POSTCONDITION(sc.presentQueue, "Unable to obtain presentation queue.");
+    sc.headlessQueue = VK_NULL_HANDLE;
 }
 
-void getSurfaceCaps(VulkanContext& context, VulkanSurfaceContext& sc) {
+void getHeadlessQueue(VulkanContext& context, VulkanSurfaceContext& sc) {
+    vkGetDeviceQueue(context.device, context.graphicsQueueFamilyIndex, 0, &sc.headlessQueue);
+    ASSERT_POSTCONDITION(sc.headlessQueue, "Unable to obtain graphics queue.");
+    sc.presentQueue = VK_NULL_HANDLE;
+}
+
+static VkSurfaceCapabilitiesKHR getSurfaceCaps(VulkanContext& context, VulkanSurfaceContext& sc) {
     VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(context.physicalDevice,
             sc.surface, &sc.surfaceCapabilities);
     ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR error.");
@@ -279,16 +340,19 @@ void getSurfaceCaps(VulkanContext& context, VulkanSurfaceContext& sc) {
     result = vkGetPhysicalDeviceSurfaceFormatsKHR(context.physicalDevice, sc.surface,
             &surfaceFormatsCount, sc.surfaceFormats.data());
     ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkGetPhysicalDeviceSurfaceFormatsKHR error.");
+    return sc.surfaceCapabilities;
 }
 
 void createSwapChain(VulkanContext& context, VulkanSurfaceContext& surfaceContext) {
+    const auto caps = getSurfaceCaps(context, surfaceContext);
+
     // The general advice is to require one more than the minimum swap chain length, since the
     // absolute minimum could easily require waiting for a driver or presentation layer to release
     // the previous frame's buffer. The only situation in which we'd ask for the minimum length is
     // when using a MAILBOX presentation strategy for low-latency situations where tearing is
     // acceptable.
-    const uint32_t maxImageCount = surfaceContext.surfaceCapabilities.maxImageCount;
-    const uint32_t minImageCount = surfaceContext.surfaceCapabilities.minImageCount;
+    const uint32_t maxImageCount = caps.maxImageCount;
+    const uint32_t minImageCount = caps.minImageCount;
     uint32_t desiredImageCount = minImageCount + 1;
 
     // According to section 30.5 of VK 1.1, maxImageCount of zero means "that there is no limit on
@@ -305,12 +369,13 @@ void createSwapChain(VulkanContext& context, VulkanSurfaceContext& surfaceContex
             break;
         }
     }
-    const auto compositionCaps = surfaceContext.surfaceCapabilities.supportedCompositeAlpha;
+    const auto compositionCaps = caps.supportedCompositeAlpha;
     const auto compositeAlpha = (compositionCaps & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) ?
             VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR : VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 
     // Create the low-level swap chain.
-    const auto size = surfaceContext.surfaceCapabilities.currentExtent;
+    auto size = surfaceContext.clientSize = caps.currentExtent;
+
     VkSwapchainCreateInfoKHR createInfo {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = surfaceContext.surface,
@@ -319,11 +384,24 @@ void createSwapChain(VulkanContext& context, VulkanSurfaceContext& surfaceContex
         .imageColorSpace = surfaceContext.surfaceFormat.colorSpace,
         .imageExtent = size,
         .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | // Allows use as a blit destination.
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,  // Allows use as a blit source (for readPixels)
+
+        // TODO: Setting the preTransform to IDENTITY means we are letting the Android Compositor
+        // handle the rotation. In some situations it might be more efficient to handle this
+        // ourselves by setting this field to be equal to the currentTransform mask in the caps, but
+        // this would involve adjusting the MVP, derivatives in GLSL, and possibly more.
+        // https://android-developers.googleblog.com/2020/02/handling-device-orientation-efficiently.html
         .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+
         .compositeAlpha = compositeAlpha,
         .presentMode = VK_PRESENT_MODE_FIFO_KHR,
-        .clipped = VK_TRUE
+        .clipped = VK_TRUE,
+
+        // TODO: Setting the oldSwapchain parameter would avoid exiting and re-entering
+        // exclusive mode, which could result in a smoother orientation change.
+        .oldSwapchain = VK_NULL_HANDLE
     };
     VkSwapchainKHR swapchain;
     VkResult result = vkCreateSwapchainKHR(context.device, &createInfo, VKALLOC, &swapchain);
@@ -340,12 +418,14 @@ void createSwapChain(VulkanContext& context, VulkanSurfaceContext& surfaceContex
             images.data());
     ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkGetSwapchainImagesKHR error.");
     for (size_t i = 0; i < images.size(); ++i) {
+        surfaceContext.swapContexts[i].invalid = true;
         surfaceContext.swapContexts[i].attachment = {
             .format = surfaceContext.surfaceFormat.format,
             .image = images[i],
             .view = {},
             .memory = {},
-            .offscreen = {}
+            .texture = {},
+            .layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         };
     }
     utils::slog.i
@@ -354,6 +434,7 @@ void createSwapChain(VulkanContext& context, VulkanSurfaceContext& surfaceContex
             << ", " << surfaceContext.surfaceFormat.format
             << ", " << surfaceContext.surfaceFormat.colorSpace
             << ", " << imageCount
+            << ", " << caps.currentTransform
             << utils::io::endl;
 
     // Create image views.
@@ -386,6 +467,72 @@ void createSwapChain(VulkanContext& context, VulkanSurfaceContext& surfaceContex
     for (uint32_t i = 0; i < allocateInfo.commandBufferCount; ++i) {
         surfaceContext.swapContexts[i].commands.cmdbuffer = cmdbufs[i];
     }
+
+    createFinalDepthBuffer(context, surfaceContext, context.finalDepthFormat);
+}
+
+void destroySwapChain(VulkanContext& context, VulkanSurfaceContext& surfaceContext,
+        VulkanDisposer& disposer) {
+    waitForIdle(context);
+    for (SwapContext& swapContext : surfaceContext.swapContexts) {
+        disposer.release(swapContext.commands.resources);
+        vkFreeCommandBuffers(context.device, context.commandPool, 1,
+                &swapContext.commands.cmdbuffer);
+
+        // The wrapper object for the submission fence has shared ownership semantics, so here
+        // we notify other owners that the swap chain (and its associated command buffers) have
+        // been destroyed.
+        if (swapContext.commands.fence) {
+            swapContext.commands.fence->swapChainDestroyed = true;
+            swapContext.commands.fence.reset();
+        }
+
+        vkDestroyImageView(context.device, swapContext.attachment.view, VKALLOC);
+        swapContext.commands.fence = VK_NULL_HANDLE;
+        swapContext.attachment.view = VK_NULL_HANDLE;
+    }
+    vkDestroySwapchainKHR(context.device, surfaceContext.swapchain, VKALLOC);
+    vkDestroySemaphore(context.device, surfaceContext.imageAvailable, VKALLOC);
+    vkDestroySemaphore(context.device, surfaceContext.renderingFinished, VKALLOC);
+
+    vkDestroyImageView(context.device, surfaceContext.depth.view, VKALLOC);
+    vkDestroyImage(context.device, surfaceContext.depth.image, VKALLOC);
+    vkFreeMemory(context.device, surfaceContext.depth.memory, VKALLOC);
+}
+
+// makeSwapChainPresentable()
+//
+// Near the end of the frame, we transition the swap chain to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR using
+// an image barrier rather than a render pass because each render pass does not know whether or not
+// it is the last pass in the frame. (This seems to be an atypical way of achieving the transition,
+// but I see nothing wrong with it.)
+//
+// Note however that we *do* use a render pass to transition the swap chain back to
+// VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL on the subsequent frame that writes to it.
+void makeSwapChainPresentable(VulkanContext& context) {
+    VulkanSurfaceContext& surface = *context.currentSurface;
+    if (surface.headlessQueue) {
+        return;
+    }
+    SwapContext& swapContext = surface.swapContexts[surface.currentSwapIndex];
+    VkImageMemoryBarrier barrier {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = 0,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = swapContext.attachment.layout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = swapContext.attachment.image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+    vkCmdPipelineBarrier(context.currentCommands->cmdbuffer,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
 uint32_t selectMemoryType(VulkanContext& context, uint32_t flags, VkFlags reqs) {
@@ -413,8 +560,10 @@ void waitForIdle(VulkanContext& context) {
     }
 
     // Flush the work command buffer and wait for it to finish.
-    flushWorkCommandBuffer(context);
-    acquireWorkCommandBuffer(context);
+    if (!context.work.fence->submitted) {
+        flushWorkCommandBuffer(context);
+        acquireWorkCommandBuffer(context);
+    }
 
     // Wait for submitted command buffer(s) to finish.
     if (context.currentSurface) {
@@ -439,21 +588,40 @@ void waitForIdle(VulkanContext& context) {
     }
 }
 
-void acquireSwapCommandBuffer(VulkanContext& context) {
+bool acquireSwapCommandBuffer(VulkanContext& context) {
     // Ask Vulkan for the next image in the swap chain and update the currentSwapIndex.
     VulkanSurfaceContext& surface = *context.currentSurface;
-    VkResult result = vkAcquireNextImageKHR(context.device, surface.swapchain,
-            UINT64_MAX, surface.imageAvailable, VK_NULL_HANDLE, &surface.currentSwapIndex);
-    ASSERT_POSTCONDITION(result != VK_ERROR_OUT_OF_DATE_KHR,
-            "Stale / resized swap chain not yet supported.");
-    ASSERT_POSTCONDITION(result == VK_SUBOPTIMAL_KHR || result == VK_SUCCESS,
-            "vkAcquireNextImageKHR error.");
+
+    if (surface.headlessQueue) {
+
+        surface.currentSwapIndex = (surface.currentSwapIndex + 1) % surface.swapContexts.size();
+
+    } else {
+
+        VkResult result = vkAcquireNextImageKHR(context.device, surface.swapchain,
+                UINT64_MAX, surface.imageAvailable, VK_NULL_HANDLE, &surface.currentSwapIndex);
+
+        // We should be notified of a suboptimal surface, but it should not cause a cascade of
+        // log messages or a loop of re-creations.
+        if (result == VK_SUBOPTIMAL_KHR && !surface.suboptimal) {
+            utils::slog.w << "Vulkan Driver: Suboptimal swap chain." << utils::io::endl;
+            surface.suboptimal = true;
+        }
+
+        // The surface can be "out of date" when it has been resized, which is not an error.
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+            return false;
+        }
+
+        assert(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR);
+    }
+
     SwapContext& swap = getSwapContext(context);
 
     // Ensure that the previous submission of this command buffer has finished.
     auto& cmdfence = swap.commands.fence;
     if (cmdfence) {
-        result = vkWaitForFences(context.device, 1, &cmdfence->fence, VK_FALSE, UINT64_MAX);
+        VkResult result = vkWaitForFences(context.device, 1, &cmdfence->fence, VK_FALSE, UINT64_MAX);
         ASSERT_POSTCONDITION(result == VK_SUCCESS, "vkWaitForFences error.");
     }
 
@@ -470,12 +638,15 @@ void acquireSwapCommandBuffer(VulkanContext& context) {
     error = vkBeginCommandBuffer(cmdbuffer, &beginInfo);
     ASSERT_POSTCONDITION(!error, "vkBeginCommandBuffer error.");
     context.currentCommands = &swap.commands;
+    return true;
 }
 
 // Flushes the current command buffer and waits for it to finish executing.
 void flushCommandBuffer(VulkanContext& context) {
     VulkanSurfaceContext& surface = *context.currentSurface;
-    const SwapContext& sc = surface.swapContexts[surface.currentSwapIndex];
+    SwapContext& swapContext = surface.swapContexts[surface.currentSwapIndex];
+
+    makeSwapChainPresentable(context);
 
     // Submit the command buffer.
     VkResult error = vkEndCommandBuffer(context.currentCommands->cmdbuffer);
@@ -488,11 +659,12 @@ void flushCommandBuffer(VulkanContext& context) {
         .pCommandBuffers = &context.currentCommands->cmdbuffer,
     };
 
-    auto& cmdfence = sc.commands.fence;
+    auto& cmdfence = swapContext.commands.fence;
     std::unique_lock<utils::Mutex> lock(cmdfence->mutex);
     error = vkQueueSubmit(context.graphicsQueue, 1, &submitInfo, cmdfence->fence);
     lock.unlock();
     ASSERT_POSTCONDITION(!error, "vkQueueSubmit error.");
+    swapContext.invalid = true;
     cmdfence->condition.notify_all();
 
     // Restart the command buffer.
@@ -552,6 +724,104 @@ void flushWorkCommandBuffer(VulkanContext& context) {
     vkEndCommandBuffer(work.cmdbuffer);
     vkQueueSubmit(context.graphicsQueue, 1, &submitInfo, work.fence->fence);
     work.fence->submitted = true;
+}
+
+void createFinalDepthBuffer(VulkanContext& context, VulkanSurfaceContext& surfaceContext,
+        VkFormat depthFormat) {
+    // Create an appropriately-sized device-only VkImage.
+    const auto size = surfaceContext.surfaceCapabilities.currentExtent;
+    VkImage depthImage;
+    VkImageCreateInfo imageInfo {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = depthFormat,
+        .extent = { size.width, size.height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+    };
+    VkResult error = vkCreateImage(context.device, &imageInfo, VKALLOC, &depthImage);
+    assert(!error && "Unable to create depth image.");
+
+    // Allocate memory for the VkImage and bind it.
+    VkMemoryRequirements memReqs;
+    vkGetImageMemoryRequirements(context.device, depthImage, &memReqs);
+    VkMemoryAllocateInfo allocInfo {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memReqs.size,
+        .memoryTypeIndex = selectMemoryType(context, memReqs.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+    };
+    error = vkAllocateMemory(context.device, &allocInfo, nullptr,
+            &surfaceContext.depth.memory);
+    assert(!error && "Unable to allocate depth memory.");
+    error = vkBindImageMemory(context.device, depthImage, surfaceContext.depth.memory, 0);
+    assert(!error && "Unable to bind depth memory.");
+
+    // Create a VkImageView so that we can attach depth to the framebuffer.
+    VkImageView depthView;
+    VkImageViewCreateInfo viewInfo {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = depthImage,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = depthFormat,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+    error = vkCreateImageView(context.device, &viewInfo, VKALLOC, &depthView);
+    assert(!error && "Unable to create depth view.");
+
+    // Unlike the color attachments (which are double-buffered or triple-buffered), we only need one
+    // depth attachment in the entire chain.
+    surfaceContext.depth.view = depthView;
+    surfaceContext.depth.image = depthImage;
+    surfaceContext.depth.format = depthFormat;
+    surfaceContext.depth.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    // Begin a new command buffer solely for the purpose of transitioning the image layout.
+    VkCommandBuffer cmdbuffer = acquireWorkCommandBuffer(context);
+
+    // Transition the depth image into an optimal layout.
+    VkImageMemoryBarrier barrier {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .newLayout = surfaceContext.depth.layout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = depthImage,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .levelCount = 1,
+            .layerCount = 1,
+        },
+    };
+    vkCmdPipelineBarrier(cmdbuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    flushWorkCommandBuffer(context);
+}
+
+VkImageLayout getTextureLayout(TextureUsage usage) {
+    // Filament sometimes samples from depth while it is bound to the current render target, (e.g.
+    // SSAO does this while depth writes are disabled) so let's keep it simple and use GENERAL for
+    // all depth textures.
+    if (any(usage & TextureUsage::DEPTH_ATTACHMENT)) {
+        return VK_IMAGE_LAYOUT_GENERAL;
+    }
+
+    // Filament sometimes samples from one miplevel while writing to another level in the same
+    // texture (e.g. bloom does this). Moreover we'd like to avoid lots of expensive layout
+    // transitions. So, keep it simple and use GENERAL for all color-attachable textures.
+    if (any(usage & TextureUsage::COLOR_ATTACHMENT)) {
+        return VK_IMAGE_LAYOUT_GENERAL;
+    }
+
+    // Finally, the layout for an immutable texture is optimal read-only.
+    return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 } // namespace filament

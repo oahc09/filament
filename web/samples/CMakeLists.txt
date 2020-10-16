@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
 project(websamples)
 
+if (FILAMENT_SKIP_SAMPLES)
+    return()
+endif()
+
 set(SERVER_DIR ${PROJECT_BINARY_DIR})
 set(ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
@@ -102,7 +106,7 @@ add_rawfile("third_party/models/FlightHelmet/FlightHelmet_occlusionRoughnessMeta
 add_rawfile("third_party/models/FlightHelmet/FlightHelmet.bin" "FlightHelmet.bin")
 add_rawfile("third_party/models/FlightHelmet/FlightHelmet.gltf" "FlightHelmet.gltf")
 
-add_rawfile("third_party/models/AnimatedTriangle/SimpleTriangle.bin" "SimpleTriangle.bin")
+add_rawfile("third_party/models/AnimatedTriangle/simpleTriangle.bin" "simpleTriangle.bin")
 add_rawfile("third_party/models/AnimatedTriangle/animation.bin" "animation.bin")
 add_rawfile("third_party/models/AnimatedTriangle/AnimatedTriangle.gltf" "AnimatedTriangle.gltf")
 
@@ -124,8 +128,8 @@ add_mesh("assets/models/monkey/monkey.obj" "suzanne.filamesh")
 add_mesh("third_party/models/shader_ball/shader_ball.obj" "shader_ball.filamesh")
 
 # Generate IBL and skybox images using cmgen.
-set(CMGEN_ARGS --quiet -x . --format=ktx --size=256 --extract-blur=0.1)
-set(CMGEN_ARGS_TINY --quiet -x . --format=ktx --size=64 --extract-blur=0.1)
+set(CMGEN_ARGS --quiet --format=ktx --size=256 --extract-blur=0.1)
+set(CMGEN_ARGS_TINY --quiet --format=ktx --size=64 --extract-blur=0.1)
 function(add_envmap SOURCE TARGET)
     set(source_envmap "${ROOT_DIR}/${SOURCE}")
 
@@ -142,19 +146,21 @@ function(add_envmap SOURCE TARGET)
 
     add_custom_command(OUTPUT ${target_skybox} ${target_skybox_tiny} ${target_envmap}
 
-        # Create a low-resolution skybox, then rename it.
-        COMMAND cmgen ${CMGEN_ARGS_TINY} ${source_envmap}
+        # Create a low-resolution skybox.
+        COMMAND cmgen -x ${TARGET} ${CMGEN_ARGS_TINY} ${source_envmap}
         COMMAND mv ${target_skybox} ${target_skybox_tiny}
 
-        # Finally, create KTX files for the uncompressed envmap.
-        COMMAND cmgen ${CMGEN_ARGS} ${source_envmap}
+        # Create KTX files for the full-size envmap.
+        COMMAND cmgen -x ${TARGET} ${CMGEN_ARGS} ${source_envmap}
 
         MAIN_DEPENDENCY ${source_envmap}
         DEPENDS cmgen)
 endfunction()
 
-add_envmap("third_party/environments/venetian_crossroads_2k.hdr" "venetian_crossroads_2k")
-add_envmap("third_party/environments/pillars_2k.hdr" "pillars_2k")
+# The pillars envmap is used only when building new HTML for the tutorials.
+# add_envmap("third_party/environments/pillars_2k.hdr" "pillars_2k")
+
+add_envmap("third_party/environments/lightroom_14b.hdr" "default_env")
 
 add_custom_target(sample_assets DEPENDS
     ${target_textures}
@@ -185,15 +191,17 @@ add_custom_target(filamentjs_public DEPENDS ${SERVER_DIR}/filament.js ${SERVER_D
 set(HTML_FILES
     animation.html
     helmet.html
-    leaks.html
     morphing.html
     parquet.html
     skinning.html
     suzanne.html
     triangle.html)
 
+set(ASSET_FILES
+    assets/favicon.png)
+
 set(DEMO_ASSETS)
-foreach (NAME ${HTML_FILES})
+foreach (NAME ${HTML_FILES} ${ASSET_FILES})
     add_custom_command(
         OUTPUT ${SERVER_DIR}/${NAME}
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/${NAME} ${SERVER_DIR}
@@ -201,7 +209,7 @@ foreach (NAME ${HTML_FILES})
     list(APPEND DEMO_ASSETS ${SERVER_DIR}/${NAME})
 endforeach()
 
-set(TEXTURE_FILES floor_ao_roughness_metallic.png floor_basecolor.png floor_normal.png)
+set(TEXTURE_FILES floor_ao_roughness_metallic.png floor_basecolor.jpg floor_normal.png)
 foreach (NAME ${TEXTURE_FILES})
     add_custom_command(
         OUTPUT ${SERVER_DIR}/${NAME}

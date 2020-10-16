@@ -21,7 +21,6 @@
 
 #include <private/filament/UibGenerator.h>
 
-#include "details/Culler.h"
 #include "details/Engine.h"
 #include "details/IndirectLight.h"
 #include "details/Skybox.h"
@@ -37,13 +36,11 @@ using namespace filament::math;
 using namespace utils;
 
 namespace filament {
-namespace details {
 
 // ------------------------------------------------------------------------------------------------
 
 FScene::FScene(FEngine& engine) :
-        mEngine(engine),
-        mIndirectLight(engine.getDefaultIndirectLight()) {
+        mEngine(engine) {
 }
 
 FScene::~FScene() noexcept = default;
@@ -159,7 +156,7 @@ void FScene::prepare(const mat4f& worldOriginTransform) {
                     d = normalize(mat3f::getTransformForNormals(worldTransform.upperLeft()) * d);
                 }
                 lightData.push_back_unsafe(
-                        float4{ p.xyz, lcm.getRadius(li) }, d, li, {}, {});
+                        float4{ p.xyz, lcm.getRadius(li) }, d, li, {}, {}, {});
             }
         }
     }
@@ -179,14 +176,14 @@ void FScene::updateUBOs(utils::Range<uint32_t> visibleRenderables, backend::Hand
     // allocate space into the command stream directly
     void* const buffer = driver.allocate(size);
 
+    bool hasContactShadows = false;
     auto& sceneData = mRenderableData;
     for (uint32_t i : visibleRenderables) {
         mat4f const& model = sceneData.elementAt<WORLD_TRANSFORM>(i);
         const size_t offset = i * sizeof(PerRenderableUib);
 
         UniformBuffer::setUniform(buffer,
-                offset + offsetof(PerRenderableUib, worldFromModelMatrix),
-                model);
+                offset + offsetof(PerRenderableUib, worldFromModelMatrix), model);
 
         // Using mat3f::getTransformForNormals handles non-uniform scaling, but DOESN'T guarantee that
         // the transformed normals will have unit-length, therefore they need to be normalized
@@ -202,25 +199,46 @@ void FScene::updateUBOs(utils::Range<uint32_t> visibleRenderables, backend::Hand
         mat3f m = mat3f::getTransformForNormals(model.upperLeft());
         m *= mat3f(1.0f / std::sqrt(max(float3{length2(m[0]), length2(m[1]), length2(m[2])})));
 
+        // The shading normal must be flipped for mirror transformations.
+        // Basically we're shading the other side of the polygon and therefore need to negate the
+        // normal, similar to what we already do to support double-sided lighting.
+        if (sceneData.elementAt<REVERSED_WINDING_ORDER>(i)) {
+            m = -m;
+        }
+
         UniformBuffer::setUniform(buffer,
                 offset + offsetof(PerRenderableUib, worldFromModelNormalMatrix), m);
 
-        // Note that we cast bools to uint32. Booleans are byte-sized in C++, but we need to
+        // Note that we cast bool to uint32_t. Booleans are byte-sized in C++, but we need to
         // initialize all 32 bits in the UBO field.
 
-        UniformBuffer::setUniform(buffer, offset + offsetof(PerRenderableUib, skinningEnabled),
-                uint32_t(sceneData.elementAt<VISIBILITY_STATE>(i).skinning));
-
-        UniformBuffer::setUniform(buffer, offset + offsetof(PerRenderableUib, morphingEnabled),
-                uint32_t(sceneData.elementAt<VISIBILITY_STATE>(i).morphing));
+        FRenderableManager::Visibility visibility = sceneData.elementAt<VISIBILITY_STATE>(i);
+        hasContactShadows = hasContactShadows || visibility.screenSpaceContactShadows;
+        UniformBuffer::setUniform(buffer,
+                offset + offsetof(PerRenderableUib, skinningEnabled),
+                uint32_t(visibility.skinning));
 
         UniformBuffer::setUniform(buffer,
-                offset + offsetof(PerRenderableUib, morphWeights), sceneData.elementAt<MORPH_WEIGHTS>(i));
+                offset + offsetof(PerRenderableUib, morphingEnabled),
+                uint32_t(visibility.morphing));
+
+        UniformBuffer::setUniform(buffer,
+                offset + offsetof(PerRenderableUib, screenSpaceContactShadows),
+                uint32_t(visibility.screenSpaceContactShadows));
+
+        UniformBuffer::setUniform(buffer,
+                offset + offsetof(PerRenderableUib, morphWeights),
+                sceneData.elementAt<MORPH_WEIGHTS>(i));
     }
 
     // TODO: handle static objects separately
+    mHasContactShadows = hasContactShadows;
     mRenderableViewUbh = renderableUbh;
     driver.loadUniformBuffer(renderableUbh, { buffer, size });
+
+    if (mSkybox) {
+        mSkybox->commit(driver);
+    }
 }
 
 void FScene::terminate(FEngine& engine) {
@@ -244,23 +262,26 @@ void FScene::prepareDynamicLights(const CameraInfo& camera, ArenaScope& rootAren
      */
 
     ArenaScope arena(rootArena.getAllocator());
-    float* const UTILS_RESTRICT distances = arena.allocate<float>(lightData.size(), CACHELINE_SIZE);
+    size_t const size = lightData.size();
+
+    // always allocate at least 4 entries, because the vectorized loops below rely on that
+    float* const UTILS_RESTRICT distances = arena.allocate<float>((size + 3u) & 3u, CACHELINE_SIZE);
 
     // pre-compute the lights' distance to the camera plane, for sorting below
     // - we don't skip the directional light, because we don't care, it's ignored during sorting
     float4 const* const UTILS_RESTRICT spheres = lightData.data<FScene::POSITION_RADIUS>();
-    computeLightCameraPlaneDistances(distances, camera, spheres, lightData.size());
+    computeLightCameraPlaneDistances(distances, camera, spheres, size);
 
     // skip directional light
     Zip2Iterator<FScene::LightSoa::iterator, float*> b = { lightData.begin(), distances };
-    std::sort(b + DIRECTIONAL_LIGHTS_COUNT, b + lightData.size(),
+    std::sort(b + DIRECTIONAL_LIGHTS_COUNT, b + size,
             [](auto const& lhs, auto const& rhs) { return lhs.second < rhs.second; });
 
     // drop excess lights
-    lightData.resize(std::min(lightData.size(), CONFIG_MAX_LIGHT_COUNT + DIRECTIONAL_LIGHTS_COUNT));
+    lightData.resize(std::min(size, CONFIG_MAX_LIGHT_COUNT + DIRECTIONAL_LIGHTS_COUNT));
 
     // number of point/spot lights
-    size_t positionalLightCount = lightData.size() - DIRECTIONAL_LIGHTS_COUNT;
+    size_t positionalLightCount = size - DIRECTIONAL_LIGHTS_COUNT;
 
     // compute the light ranges (needed when building light trees)
     float2* const zrange = lightData.data<FScene::SCREEN_SPACE_Z_RANGE>();
@@ -268,15 +289,18 @@ void FScene::prepareDynamicLights(const CameraInfo& camera, ArenaScope& rootAren
 
     LightsUib* const lp = driver.allocatePod<LightsUib>(positionalLightCount);
 
-    auto const* UTILS_RESTRICT directions   = lightData.data<FScene::DIRECTION>();
-    auto const* UTILS_RESTRICT instances    = lightData.data<FScene::LIGHT_INSTANCE>();
-    for (size_t i = DIRECTIONAL_LIGHTS_COUNT, c = lightData.size(); i < c; ++i) {
+    auto const* UTILS_RESTRICT directions       = lightData.data<FScene::DIRECTION>();
+    auto const* UTILS_RESTRICT instances        = lightData.data<FScene::LIGHT_INSTANCE>();
+    auto const* UTILS_RESTRICT shadowInfo       = lightData.data<FScene::SHADOW_INFO>();
+    for (size_t i = DIRECTIONAL_LIGHTS_COUNT, c = size; i < c; ++i) {
         const size_t gpuIndex = i - DIRECTIONAL_LIGHTS_COUNT;
         auto li = instances[i];
         lp[gpuIndex].positionFalloff      = { spheres[i].xyz, lcm.getSquaredFalloffInv(li) };
         lp[gpuIndex].colorIntensity       = { lcm.getColor(li), lcm.getIntensity(li) };
-        lp[gpuIndex].directionIES         = { directions[i], 0 };
-        lp[gpuIndex].spotScaleOffset.xy   = { lcm.getSpotParams(li).scaleOffset };
+        lp[gpuIndex].directionIES         = { directions[i], 0.0f };
+        lp[gpuIndex].spotScaleOffset      = lcm.getSpotParams(li).scaleOffset;
+        lp[gpuIndex].shadow               = { shadowInfo[i].pack() };
+        lp[gpuIndex].type                 = lcm.isPointLight(li) ? 0u : 1u;
     }
 
     driver.loadUniformBuffer(lightUbh, { lp, positionalLightCount * sizeof(LightsUib) });
@@ -346,6 +370,12 @@ void FScene::remove(Entity entity) {
     mEntities.erase(entity);
 }
 
+void FScene::removeEntities(const Entity* entities, size_t count) {
+    for (size_t i = 0; i < count; ++i, ++entities) {
+        remove(*entities);
+    }
+}
+
 size_t FScene::getRenderableCount() const noexcept {
     FEngine& engine = mEngine;
     EntityManager& em = engine.getEntityManager();
@@ -374,7 +404,7 @@ bool FScene::hasEntity(Entity entity) const noexcept {
     return mEntities.find(entity) != mEntities.end();
 }
 
-void FScene::setSkybox(FSkybox const* skybox) noexcept {
+void FScene::setSkybox(FSkybox* skybox) noexcept {
     std::swap(mSkybox, skybox);
     if (skybox) {
         remove(skybox->getEntity());
@@ -384,16 +414,40 @@ void FScene::setSkybox(FSkybox const* skybox) noexcept {
     }
 }
 
-} // namespace details
+bool FScene::hasContactShadows() const noexcept {
+    // find out if at least one light has contact-shadow enabled
+    // TODO: cache the the result of this Loop in the LightManager
+    bool hasContactShadows = false;
+    auto& lcm = mEngine.getLightManager();
+    const auto *pFirst = mLightData.begin<LIGHT_INSTANCE>();
+    const auto *pLast = mLightData.end<LIGHT_INSTANCE>();
+    while (pFirst != pLast && !hasContactShadows) {
+        if (pFirst->isValid()) {
+            auto const& shadowOptions = lcm.getShadowOptions(*pFirst);
+            hasContactShadows = shadowOptions.screenSpaceContactShadows;
+        }
+        ++pFirst;
+    }
+
+    // at least some renderables in the scene must have contact-shadows enabled
+    // TODO: we should refine this with only the visible ones
+    return hasContactShadows && mHasContactShadows;
+}
 
 // ------------------------------------------------------------------------------------------------
 // Trampoline calling into private implementation
 // ------------------------------------------------------------------------------------------------
 
-using namespace details;
-
-void Scene::setSkybox(Skybox const* skybox) noexcept {
+void Scene::setSkybox(Skybox* skybox) noexcept {
     upcast(this)->setSkybox(upcast(skybox));
+}
+
+Skybox* Scene::getSkybox() noexcept {
+    return upcast(this)->getSkybox();
+}
+
+Skybox const* Scene::getSkybox() const noexcept {
+    return upcast(this)->getSkybox();
 }
 
 void Scene::setIndirectLight(IndirectLight const* ibl) noexcept {
@@ -410,6 +464,10 @@ void Scene::addEntities(const Entity* entities, size_t count) {
 
 void Scene::remove(Entity entity) {
     upcast(this)->remove(entity);
+}
+
+void Scene::removeEntities(const Entity* entities, size_t count) {
+    upcast(this)->removeEntities(entities, count);
 }
 
 size_t Scene::getRenderableCount() const noexcept {

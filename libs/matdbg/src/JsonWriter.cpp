@@ -68,7 +68,7 @@ static void printFloatChunk(ostream& json, const ChunkContainer& container, Chun
 }
 
 static void printUint32Chunk(ostream& json, const ChunkContainer& container,
-        filamat::ChunkType type, const char* title) {
+        ChunkType type, const char* title) {
     uint32_t value;
     if (read(container, type, &value)) {
         json << "\"" << title << "\": " << value << ",\n";
@@ -76,18 +76,19 @@ static void printUint32Chunk(ostream& json, const ChunkContainer& container,
 }
 
 static void printStringChunk(ostream& json, const ChunkContainer& container,
-        filamat::ChunkType type, const char* title) {
+        ChunkType type, const char* title) {
     CString value;
     if (read(container, type, &value)) {
-        json << "\"" << title << "\": \"" << value.c_str() << "\",\n";
+        json << "\"" << title << "\": \"" << value.c_str_safe() << "\",\n";
     }
 }
 
 static bool printMaterial(ostream& json, const ChunkContainer& container) {
-    printStringChunk(json, container, filamat::MaterialName, "name");
-    printUint32Chunk(json, container, filamat::MaterialVersion, "version");
+    printStringChunk(json, container, MaterialName, "name");
+    printUint32Chunk(json, container, MaterialVersion, "version");
     json << "\"shading\": {\n";
     printChunk<Shading, uint8_t>(json, container, MaterialShading, "model");
+    printChunk<MaterialDomain, uint8_t>(json, container, ChunkType::MaterialDomain, "material_domain");
     printChunk<VertexDomain, uint8_t>(json, container, MaterialVertexDomain, "vertex_domain");
     printChunk<Interpolation, uint8_t>(json, container, MaterialInterpolation, "interpolation");
     printChunk<bool, bool>(json, container, MaterialShadowMultiplier, "shadow_multiply");
@@ -117,19 +118,8 @@ static bool printParametersInfo(ostream& json, const ChunkContainer& container) 
 static void printShaderInfo(ostream& json, const std::vector<ShaderInfo>& info) {
     for (uint64_t i = 0; i < info.size(); ++i) {
         const auto& item = info[i];
-        string variantString = "";
 
-        // NOTE: The 3-character nomenclature used here is consistent with the ASCII art seen in the
-        // Variant header file and allows the information to fit in a reasonable amount of space on
-        // the page. The HTML file has a legend.
-        if (item.variant) {
-            if (item.variant & filament::Variant::DIRECTIONAL_LIGHTING)  variantString += "DIR|";
-            if (item.variant & filament::Variant::DYNAMIC_LIGHTING)      variantString += "DYN|";
-            if (item.variant & filament::Variant::SHADOW_RECEIVER)       variantString += "SRE|";
-            if (item.variant & filament::Variant::SKINNING_OR_MORPHING)  variantString += "SKN|";
-            variantString = variantString.substr(0, variantString.length() - 1);
-        }
-
+        string variantString = formatVariantString(item.variant);
         string ps = (item.pipelineStage == backend::ShaderType::VERTEX) ? "vertex  " : "fragment";
         json
             << "    {"
@@ -226,7 +216,7 @@ size_t JsonWriter::getJsonSize() const {
 }
 
 bool JsonWriter::writeActiveInfo(const filaflat::ChunkContainer& package,
-        Backend backend, uint16_t activeVariants) {
+        Backend backend, uint64_t activeVariants) {
     vector<ShaderInfo> shaders;
     ostringstream json;
     json << "[\"";

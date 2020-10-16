@@ -111,14 +111,21 @@ private:
 
 // ------------------------------------------------------------------------------------------------
 
+template<typename T, typename Type, typename D, typename ... ARGS>
+constexpr decltype(auto) invoke(Type T::* m, D&& d, ARGS&& ... args) {
+    static_assert(std::is_base_of<T, std::decay_t<D>>::value,
+            "member function and object not related");
+    return (std::forward<D>(d).*m)(std::forward<ARGS>(args)...);
+}
+
 template<typename M, typename D, typename T, std::size_t... I>
-constexpr void trampoline(M&& m, D&& d, T&& t, std::index_sequence<I...>) {
-    (d.*m)(std::move(std::get<I>(std::forward<T>(t)))...);
+constexpr decltype(auto) trampoline(M&& m, D&& d, T&& t, std::index_sequence<I...>) {
+    return invoke(std::forward<M>(m), std::forward<D>(d), std::get<I>(std::forward<T>(t))...);
 }
 
 template<typename M, typename D, typename T>
-constexpr void apply(M&& m, D&& d, T&& t) {
-    trampoline(std::forward<M>(m), std::forward<D>(d), std::forward<T>(t),
+constexpr decltype(auto) apply(M&& m, D&& d, T&& t) {
+    return trampoline(std::forward<M>(m), std::forward<D>(d), std::forward<T>(t),
             std::make_index_sequence< std::tuple_size<std::remove_reference_t<T>>::value >{});
 }
 
@@ -143,7 +150,7 @@ struct CommandType<void (Driver::*)(ARGS...)> {
     template<void(Driver::*)(ARGS...)>
     class Command : public CommandBase {
         // We use a std::tuple<> to record the arguments passed to the constructor
-        using SavedParameters = std::tuple<typename std::decay<ARGS>::type...>;
+        using SavedParameters = std::tuple<std::remove_reference_t<ARGS>...>;
         SavedParameters mArgs;
 
         void log() noexcept;
@@ -158,7 +165,7 @@ struct CommandType<void (Driver::*)(ARGS...)> {
                 // must call this before invoking the method
                 self->log();
 #endif
-            apply(std::forward<M>(method), std::forward<D>(driver), self->mArgs);
+            apply(std::forward<M>(method), std::forward<D>(driver), std::move(self->mArgs));
             self->~Command();
         }
 
@@ -167,7 +174,7 @@ struct CommandType<void (Driver::*)(ARGS...)> {
 
         template<typename... A>
         inline explicit constexpr Command(Execute execute, A&& ... args)
-                : CommandBase(execute), mArgs(std::move(args)...) {
+                : CommandBase(execute), mArgs(std::forward<A>(args)...) {
         }
 
         // placement new declared as "throw" to avoid the compiler's null-check
@@ -221,13 +228,13 @@ public:
         DEBUG_COMMAND(methodName, params);                                                      \
         using Cmd = COMMAND_TYPE(methodName);                                                   \
         void* const p = allocateCommand(CommandBase::align(sizeof(Cmd)));                       \
-        new(p) Cmd(mDispatcher->methodName##_, params);                                         \
+        new(p) Cmd(mDispatcher->methodName##_, APPLY(std::move, params));                       \
     }
 
 #define DECL_DRIVER_API_SYNCHRONOUS(RetType, methodName, paramsDecl, params)                    \
     inline RetType methodName(paramsDecl) {                                                     \
         DEBUG_COMMAND(methodName, params);                                                      \
-        return mDriver->methodName(params);                                                     \
+        return apply(&Driver::methodName, *mDriver, std::forward_as_tuple(params));             \
     }
 
 #define DECL_DRIVER_API_RETURN(RetType, methodName, paramsDecl, params)                         \
@@ -236,7 +243,7 @@ public:
         RetType result = mDriver->methodName##S();                                              \
         using Cmd = COMMAND_TYPE(methodName##R);                                                \
         void* const p = allocateCommand(CommandBase::align(sizeof(Cmd)));                       \
-        new(p) Cmd(mDispatcher->methodName##_, RetType(result), params);                        \
+        new(p) Cmd(mDispatcher->methodName##_, RetType(result), APPLY(std::move, params));      \
         return result;                                                                          \
     }
 
@@ -289,6 +296,8 @@ private:
     // just for debugging...
     std::thread::id mThreadId;
 #endif
+
+    bool mUsePerformanceCounter = false;
 
     inline void* allocateCommand(size_t size) {
         assert(mThreadId == std::this_thread::get_id());

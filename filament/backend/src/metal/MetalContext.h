@@ -17,9 +17,6 @@
 #ifndef TNT_METALCONTEXT_H
 #define TNT_METALCONTEXT_H
 
-#include "MetalBlitter.h"
-#include "MetalBufferPool.h"
-#include "MetalDefines.h"
 #include "MetalResourceTracker.h"
 #include "MetalState.h"
 
@@ -31,20 +28,22 @@ namespace filament {
 namespace backend {
 namespace metal {
 
+class MetalBlitter;
+class MetalBufferPool;
 class MetalRenderTarget;
-class MetalUniformBuffer;
+class MetalSwapChain;
+class TimerQueryInterface;
+struct MetalUniformBuffer;
 struct MetalIndexBuffer;
 struct MetalSamplerGroup;
-struct MetalSwapChain;
 struct MetalVertexBuffer;
 
 struct MetalContext {
     id<MTLDevice> device = nullptr;
     id<MTLCommandQueue> commandQueue = nullptr;
 
-    // Single use, re-created each frame.
-    id<MTLCommandBuffer> currentCommandBuffer = nullptr;
-    id<MTLRenderCommandEncoder> currentCommandEncoder = nullptr;
+    id<MTLCommandBuffer> pendingCommandBuffer = nullptr;
+    id<MTLRenderCommandEncoder> currentRenderPassEncoder = nullptr;
 
     // These two fields store a callback and user data to notify the client that a frame is ready
     // for presentation.
@@ -78,33 +77,42 @@ struct MetalContext {
 
     // Surface-related properties.
     MetalSwapChain* currentSurface = nullptr;
-    id<CAMetalDrawable> currentDrawable = nullptr;
-    MTLPixelFormat currentSurfacePixelFormat = MTLPixelFormatInvalid;
-    MTLPixelFormat currentDepthPixelFormat = MTLPixelFormatInvalid;
+    id<CAMetalDrawable> currentDrawable = nil;
+    id<MTLTexture> currentDepthTexture = nil;
+    id<MTLTexture> headlessDrawable = nil;
 
     // External textures.
     CVMetalTextureCacheRef textureCache = nullptr;
+    id<MTLComputePipelineState> externalImageComputePipelineState = nil;
 
     // Empty texture used to prevent GPU errors when a sampler has been bound without a texture.
     id<MTLTexture> emptyTexture = nil;
 
     MetalBlitter* blitter = nullptr;
 
-    // Fences.
-#if METAL_FENCES_SUPPORTED
+    // Fences, only supported on macOS 10.14 and iOS 12 and above.
+    API_AVAILABLE(macos(10.14), ios(12.0))
     MTLSharedEventListener* eventListener = nil;
     uint64_t signalId = 1;
-#endif
+
+    TimerQueryInterface* timerQueryImpl;
 };
 
 // Acquire the current surface's CAMetalDrawable for the current frame if it has not already been
-// acquired.
-// This method returns the drawable and stores it in the context's currentDrawable field.
-id<CAMetalDrawable> acquireDrawable(MetalContext* context);
+// acquired. This method stores it in the context's currentDrawable field and returns the
+// drawable's texture.
+// For headless swapchains a new texture is created.
+id<MTLTexture> acquireDrawable(MetalContext* context);
 
-id<MTLCommandBuffer> acquireCommandBuffer(MetalContext* context);
+id<MTLTexture> acquireDepthTexture(MetalContext* context);
+
+id<MTLCommandBuffer> getPendingCommandBuffer(MetalContext* context);
+
+void submitPendingCommands(MetalContext* context);
 
 id<MTLTexture> getOrCreateEmptyTexture(MetalContext* context);
+
+bool isInRenderPass(MetalContext* context);
 
 } // namespace metal
 } // namespace backend

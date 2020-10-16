@@ -18,8 +18,19 @@
 
 #include <filament/LightManager.h>
 
+#include <utils/Entity.h>
+
+#include <algorithm>
+
 using namespace filament;
 using namespace utils;
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_google_android_filament_LightManager_nGetComponentCount(JNIEnv*, jclass,
+        jlong nativeLightManager) {
+    LightManager *lm = (LightManager *) nativeLightManager;
+    return lm->getComponentCount();
+}
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_google_android_filament_LightManager_nHasComponent(JNIEnv*, jclass,
@@ -62,18 +73,35 @@ Java_com_google_android_filament_LightManager_nBuilderCastShadows(JNIEnv*, jclas
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_android_filament_LightManager_nBuilderShadowOptions(JNIEnv*, jclass,
-        jlong nativeBuilder, jint mapSize, jfloat constantBias, jfloat normalBias, jfloat shadowFar,
-        jfloat shadowNearHint, jfloat shadowFarHint, jboolean stable) {
+Java_com_google_android_filament_LightManager_nBuilderShadowOptions(JNIEnv* env, jclass,
+        jlong nativeBuilder, jint mapSize, jint cascades, jfloatArray splitPositions,
+        jfloat constantBias, jfloat normalBias, jfloat shadowFar, jfloat shadowNearHint,
+        jfloat shadowFarHint, jboolean stable, jboolean screenSpaceContactShadows, jint stepCount,
+        jfloat maxShadowDistance, jint vsmMsaaSamples) {
     LightManager::Builder *builder = (LightManager::Builder *) nativeBuilder;
-    builder->shadowOptions(
-            LightManager::ShadowOptions{.mapSize = (uint32_t)mapSize,
-                                        .constantBias = constantBias,
-                                        .normalBias = normalBias,
-                                        .shadowFar = shadowFar,
-                                        .shadowNearHint = shadowNearHint,
-                                        .shadowFarHint = shadowFarHint,
-                                        .stable = (bool)stable});
+    LightManager::ShadowOptions shadowOptions {
+            .mapSize = (uint32_t)mapSize,
+            .shadowCascades = (uint8_t)cascades,
+            .constantBias = constantBias,
+            .normalBias = normalBias,
+            .shadowFar = shadowFar,
+            .shadowNearHint = shadowNearHint,
+            .shadowFarHint = shadowFarHint,
+            .stable = (bool)stable,
+            .screenSpaceContactShadows = (bool)screenSpaceContactShadows,
+            .stepCount = uint8_t(stepCount),
+            .maxShadowDistance = maxShadowDistance,
+            .vsm = {
+                    .msaaSamples = (uint8_t) vsmMsaaSamples
+            }
+    };
+    jfloat *nativeSplits = env->GetFloatArrayElements(splitPositions, NULL);
+    const jsize splitCount = std::min((jsize) 3, env->GetArrayLength(splitPositions));
+    for (jsize i = 0; i < splitCount; i++) {
+        shadowOptions.cascadeSplitPositions[i] = nativeSplits[i];
+    }
+    env->ReleaseFloatArrayElements(splitPositions, nativeSplits, 0);
+    builder->shadowOptions(shadowOptions);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -102,6 +130,13 @@ Java_com_google_android_filament_LightManager_nBuilderColor(JNIEnv*, jclass,
         jlong nativeBuilder, jfloat linearR, jfloat linearG, jfloat linearB) {
     LightManager::Builder *builder = (LightManager::Builder *) nativeBuilder;
     builder->color({linearR, linearG, linearB});
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_LightManager_nBuilderIntensityCandela(JNIEnv*, jclass,
+        jlong nativeBuilder, jfloat intensity) {
+    LightManager::Builder *builder = (LightManager::Builder *) nativeBuilder;
+    builder->intensityCandela(intensity);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -151,6 +186,30 @@ Java_com_google_android_filament_LightManager_nBuilderHaloFalloff(JNIEnv*, jclas
         jlong nativeBuilder, jfloat haloFalloff) {
     LightManager::Builder *builder = (LightManager::Builder *) nativeBuilder;
     builder->sunHaloFalloff(haloFalloff);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_LightManager_nComputeUniformSplits(JNIEnv* env, jclass,
+        jfloatArray splitPositions, jint cascades) {
+    jfloat *nativeSplits = env->GetFloatArrayElements(splitPositions, NULL);
+    LightManager::ShadowCascades::computeUniformSplits(nativeSplits, (uint8_t) cascades);
+    env->ReleaseFloatArrayElements(splitPositions, nativeSplits, 0);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_LightManager_nComputeLogSplits(JNIEnv* env, jclass,
+        jfloatArray splitPositions, jint cascades, jfloat near, jfloat far) {
+    jfloat *nativeSplits = env->GetFloatArrayElements(splitPositions, NULL);
+    LightManager::ShadowCascades::computeLogSplits(nativeSplits, (uint8_t) cascades, near, far);
+    env->ReleaseFloatArrayElements(splitPositions, nativeSplits, 0);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_LightManager_nComputePracticalSplits(JNIEnv* env, jclass,
+        jfloatArray splitPositions, jint cascades, jfloat near, jfloat far, jfloat lambda) {
+    jfloat *nativeSplits = env->GetFloatArrayElements(splitPositions, NULL);
+    LightManager::ShadowCascades::computePracticalSplits(nativeSplits, (uint8_t) cascades, near, far, lambda);
+    env->ReleaseFloatArrayElements(splitPositions, nativeSplits, 0);
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -230,6 +289,13 @@ Java_com_google_android_filament_LightManager_nSetIntensity__JIFF(JNIEnv*, jclas
     lm->setIntensity((LightManager::Instance) i, watts, efficiency);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_LightManager_nSetIntensityCandela(JNIEnv*, jclass,
+        jlong nativeLightManager, jint i, jfloat intensity) {
+    LightManager *lm = (LightManager *) nativeLightManager;
+    lm->setIntensityCandela((LightManager::Instance) i, intensity);
+}
+
 extern "C" JNIEXPORT jfloat JNICALL
 Java_com_google_android_filament_LightManager_nGetIntensity(JNIEnv*, jclass,
         jlong nativeLightManager, jint i) {
@@ -280,7 +346,7 @@ Java_com_google_android_filament_LightManager_nSetSunHaloSize(JNIEnv*, jclass,
 }
 
 extern "C" JNIEXPORT jfloat JNICALL
-Java_com_google_android_filament_LightManager_nGetHaloSize(JNIEnv*, jclass,
+Java_com_google_android_filament_LightManager_nGetSunHaloSize(JNIEnv*, jclass,
         jlong nativeLightManager, jint i) {
     LightManager *lm = (LightManager *) nativeLightManager;
     return lm->getSunHaloSize((LightManager::Instance) i);
@@ -294,7 +360,7 @@ Java_com_google_android_filament_LightManager_nSetSunHaloFalloff(JNIEnv*, jclass
 }
 
 extern "C" JNIEXPORT jfloat JNICALL
-Java_com_google_android_filament_LightManager_nGetHaloFalloff(JNIEnv*, jclass,
+Java_com_google_android_filament_LightManager_nGetSunHaloFalloff(JNIEnv*, jclass,
         jlong nativeLightManager, jint i) {
     LightManager *lm = (LightManager *) nativeLightManager;
     return lm->getSunHaloFalloff((LightManager::Instance) i);
@@ -302,7 +368,7 @@ Java_com_google_android_filament_LightManager_nGetHaloFalloff(JNIEnv*, jclass,
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_google_android_filament_LightManager_nSetShadowCaster(JNIEnv*, jclass,
-        jlong nativeLightManager, jint i, jfloat shadowCaster) {
+        jlong nativeLightManager, jint i, jboolean shadowCaster) {
     LightManager *lm = (LightManager *) nativeLightManager;
     lm->setShadowCaster((LightManager::Instance) i, shadowCaster);
 }
@@ -311,5 +377,5 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_google_android_filament_LightManager_nIsShadowCaster(JNIEnv*, jclass,
         jlong nativeLightManager, jint i) {
     LightManager *lm = (LightManager *) nativeLightManager;
-    return lm->isShadowCaster((LightManager::Instance) i);
+    return (jboolean)lm->isShadowCaster((LightManager::Instance) i);
 }

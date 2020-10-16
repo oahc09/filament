@@ -41,7 +41,6 @@
 #include <vector>
 
 namespace filament {
-namespace details {
 
 class FEngine;
 class FCamera;
@@ -57,11 +56,11 @@ public:
 
 //
 // Light UBO           Froxel Record Buffer     per-froxel light list texture
-// {4 x float4}         R_U8  {index into        RG_U16 {offset, point-count, spot-sount}
+// {4 x float4}         R_U8  {index into        RG_U16 {offset, point-count, spot-count}
 // (spot/point            light texture}
 //
 //  +----+                     +-+                     +----+
-// 0|....| <------------+     0| |         +-----------|0221| (e.g. offset=02, 2-point, 1-spot)
+// 0|....| <------------+     0| |         +-----------|0230| (e.g. offset=02, 3-lights)
 // 1|....|<--------+     \    1| |        /            |    |
 // 2:    :          \     +---2|0|<------+             |    |
 // 3:    : <-------- \--------3|3|                     :    :
@@ -148,13 +147,8 @@ public:
             uint32_t u32 = 0;
             struct {
                 uint16_t offset;
-                union {
-                    uint8_t count[2];
-                    struct {
-                        uint8_t pointLightCount;
-                        uint8_t spotLightCount;
-                    };
-                };
+                uint8_t count;
+                uint8_t reserved;
             };
         };
     };
@@ -196,8 +190,7 @@ private:
         uint16_t reserved;
     };
 
-    // The first entry always encodes the type of light, i.e. point/spot
-    using FroxelThreadData = std::array<LightGroupType, FROXEL_BUFFER_ENTRY_COUNT_MAX + 1>;
+    using FroxelThreadData = std::array<LightGroupType, FROXEL_BUFFER_ENTRY_COUNT_MAX>;
 
     void setViewport(Viewport const& viewport) noexcept;
     void setProjection(const math::mat4f& projection, float near, float far) noexcept;
@@ -273,7 +266,6 @@ private:
     };
 };
 
-} // namespace details
 } // namespace filament
 
 #endif // TNT_FILAMENT_DETAILS_FROXEL_H

@@ -29,8 +29,8 @@ class SamplerInterfaceBlock;
 
 class SibGenerator {
 public:
-    static SamplerInterfaceBlock const& getPerViewSib() noexcept;
-    static SamplerInterfaceBlock const* getSib(uint8_t bindingPoint) noexcept;
+    static SamplerInterfaceBlock const& getPerViewSib(uint8_t variantKey) noexcept;
+    static SamplerInterfaceBlock const* getSib(uint8_t bindingPoint, uint8_t variantKey) noexcept;
 };
 
 struct PerViewSib {
@@ -41,8 +41,10 @@ struct PerViewSib {
     static constexpr size_t IBL_DFG_LUT    = 3;
     static constexpr size_t IBL_SPECULAR   = 4;
     static constexpr size_t SSAO           = 5;
+    static constexpr size_t SSR            = 6;
+    static constexpr size_t STRUCTURE      = 7;
 
-    static constexpr size_t SAMPLER_COUNT = 6;
+    static constexpr size_t SAMPLER_COUNT  = 8;
 };
 
 }

@@ -40,7 +40,8 @@ OpenGLContext::OpenGLContext() noexcept {
 #endif
 
     // OpenGL (ES) version
-    GLint major = 0, minor = 0;
+    GLint major = 0;
+    GLint minor = 0;
     glGetIntegerv(GL_MAJOR_VERSION, &major);
     glGetIntegerv(GL_MINOR_VERSION, &minor);
     glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &gets.max_renderbuffer_size);
@@ -56,13 +57,17 @@ OpenGLContext::OpenGLContext() noexcept {
 #endif
 
     if (strstr(renderer, "Adreno")) {
-        bugs.clears_hurt_performance = true;
+        bugs.dont_use_timer_query = true;   // verified
     } else if (strstr(renderer, "Mali")) {
+        bugs.dont_use_timer_query = true;   // not verified
         bugs.vao_doesnt_store_element_array_buffer_binding = true;
         if (strstr(renderer, "Mali-T")) {
             bugs.disable_glFlush = true;
             bugs.disable_shared_context_draws = true;
             bugs.texture_external_needs_rebind = true;
+        }
+        if (strstr(renderer, "Mali-G")) {
+            bugs.disable_texture_filter_anisotropic = true;
         }
     } else if (strstr(renderer, "Intel")) {
         bugs.vao_doesnt_store_element_array_buffer_binding = true;
@@ -75,7 +80,7 @@ OpenGLContext::OpenGLContext() noexcept {
     }
 
     // Figure out if we have the extension we need
-    GLint n;
+    GLint n = 0;
     glGetIntegerv(GL_NUM_EXTENSIONS, &n);
     ExtentionSet exts;
     for (GLint i = 0; i < n; i++) {
@@ -109,25 +114,30 @@ OpenGLContext::OpenGLContext() noexcept {
      * Set our default state
      */
 
-    disable(GL_DITHER);
-    enable(GL_DEPTH_TEST);
+    // We need to make sure our internal state matches the GL state when we start.
+    // (some of these calls may be unneeded as they might be the gl defaults)
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_DITHER);
+    glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+    glDisable(GL_SAMPLE_COVERAGE);
+    glDisable(GL_POLYGON_OFFSET_FILL);
 
-    // With desktop GL, the application must enable point size to allow vertex shaders to set it,
-    // but with OpenGL ES, this is always on and there is no enable flag.
+    // Point sprite size and seamless cubemap filtering are disabled by default in desktop GL.
+    // In OpenGL ES, these flags do not exist because they are always on.
 #if GL41_HEADERS
     enable(GL_PROGRAM_POINT_SIZE);
 #endif
-
-    // TODO: Don't enable scissor when it is not necessary. This optimization could be done here in
-    // the driver by simply deferring the enable until the scissor rect is smaller than the window.
-    enable(GL_SCISSOR_TEST);
 
 #ifdef GL_ARB_seamless_cube_map
     enable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 #endif
 
 #ifdef GL_EXT_texture_filter_anisotropic
-    if (ext.texture_filter_anisotropic) {
+    if (ext.texture_filter_anisotropic && !bugs.disable_texture_filter_anisotropic) {
         glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &gets.maxAnisotropy);
     }
 #endif
@@ -140,29 +150,60 @@ OpenGLContext::OpenGLContext() noexcept {
     if (ext.KHR_debug) {
         auto cb = [](GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length,
                 const GLchar* message, const void *userParam) {
-            io::LogStream* stream;
+            io::LogStream* stream = nullptr;
             switch (severity) {
-                case GL_DEBUG_SEVERITY_HIGH: stream = &slog.e; break;
-                case GL_DEBUG_SEVERITY_MEDIUM: stream = &slog.w; break;
-                case GL_DEBUG_SEVERITY_LOW: stream = &slog.d; break;
-                case GL_DEBUG_SEVERITY_NOTIFICATION: stream = &slog.i; break;
+                case GL_DEBUG_SEVERITY_HIGH:
+                    stream = &slog.e;
+                    break;
+                case GL_DEBUG_SEVERITY_MEDIUM:
+                    stream = &slog.w;
+                    break;
+                case GL_DEBUG_SEVERITY_LOW:
+                    stream = &slog.d;
+                    break;
+                case GL_DEBUG_SEVERITY_NOTIFICATION:
+                default:
+                    stream = &slog.i;
+                    break;
             }
             io::LogStream& out = *stream;
             out << "KHR_debug ";
             switch (type) {
-                case GL_DEBUG_TYPE_ERROR: out << "ERROR"; break;
-                case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR: out << "DEPRECATED_BEHAVIOR"; break;
-                case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR: out << "UNDEFINED_BEHAVIOR"; break;
-                case GL_DEBUG_TYPE_PORTABILITY: out << "PORTABILITY"; break;
-                case GL_DEBUG_TYPE_PERFORMANCE: out << "PERFORMANCE"; break;
-                case GL_DEBUG_TYPE_OTHER: out << "OTHER"; break;
-                case GL_DEBUG_TYPE_MARKER: out << "MARKER"; break;
+                case GL_DEBUG_TYPE_ERROR:
+                    out << "ERROR";
+                    break;
+                case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+                    out << "DEPRECATED_BEHAVIOR";
+                    break;
+                case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+                    out << "UNDEFINED_BEHAVIOR";
+                    break;
+                case GL_DEBUG_TYPE_PORTABILITY:
+                    out << "PORTABILITY";
+                    break;
+                case GL_DEBUG_TYPE_PERFORMANCE:
+                    out << "PERFORMANCE";
+                    break;
+                case GL_DEBUG_TYPE_OTHER:
+                    out << "OTHER";
+                    break;
+                case GL_DEBUG_TYPE_MARKER:
+                    out << "MARKER";
+                    break;
+                default:
+                    break;
             }
             out << ": " << message << io::endl;
         };
         glEnable(GL_DEBUG_OUTPUT);
         glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
         glDebugMessageCallback(cb, nullptr);
+    }
+#endif
+
+#if defined(GL_EXT_clip_control) || defined(GL_ARB_clip_control) || defined(GL_VERSION_4_5)
+    if (ext.EXT_clip_control) {
+        glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
     }
 #endif
 }
@@ -184,7 +225,12 @@ void OpenGLContext::initExtensionsGLES(GLint major, GLint minor, ExtentionSet co
     ext.APPLE_color_buffer_packed_float = hasExtension(exts, "GL_APPLE_color_buffer_packed_float");
     ext.texture_compression_s3tc = hasExtension(exts, "WEBGL_compressed_texture_s3tc");
     ext.EXT_multisampled_render_to_texture = hasExtension(exts, "GL_EXT_multisampled_render_to_texture");
+    ext.EXT_multisampled_render_to_texture2 = hasExtension(exts, "GL_EXT_multisampled_render_to_texture2");
+    ext.EXT_disjoint_timer_query = hasExtension(exts, "GL_EXT_disjoint_timer_query");
     ext.KHR_debug = hasExtension(exts, "GL_KHR_debug");
+    ext.EXT_texture_compression_s3tc_srgb = hasExtension(exts, "GL_EXT_texture_compression_s3tc_srgb");
+    ext.EXT_shader_framebuffer_fetch = hasExtension(exts, "GL_EXT_shader_framebuffer_fetch");
+    ext.EXT_clip_control = hasExtension(exts, "GL_EXT_clip_control");
     // ES 3.2 implies EXT_color_buffer_float
     if (major >= 3 && minor >= 2) {
         ext.EXT_color_buffer_float = true;
@@ -201,6 +247,9 @@ void OpenGLContext::initExtensionsGL(GLint major, GLint minor, ExtentionSet cons
     ext.EXT_color_buffer_float = true;  // Assumes core profile.
     ext.APPLE_color_buffer_packed_float = true;  // Assumes core profile.
     ext.KHR_debug = major >= 4 && minor >= 3;
+    ext.EXT_texture_sRGB = hasExtension(exts, "GL_EXT_texture_sRGB");
+    ext.EXT_shader_framebuffer_fetch = hasExtension(exts, "GL_EXT_shader_framebuffer_fetch");
+    ext.EXT_clip_control = hasExtension(exts, "GL_ARB_clip_control") || (major == 4 && minor >= 5);
 }
 
 void OpenGLContext::bindBuffer(GLenum target, GLuint buffer) noexcept {

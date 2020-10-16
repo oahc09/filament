@@ -64,6 +64,10 @@ io::sstream& CodeGenerator::generateProlog(io::sstream& out, ShaderType type,
             break;
     }
 
+    // This allows our includer system to use the #line directive to denote the source file for
+    // #included code. This way, glslang reports errors more accurately.
+    out << "#extension GL_GOOGLE_cpp_style_line_directive : enable\n\n";
+
     if (mTargetApi == TargetApi::VULKAN) {
         out << "#define TARGET_VULKAN_ENVIRONMENT\n";
     }
@@ -78,13 +82,6 @@ io::sstream& CodeGenerator::generateProlog(io::sstream& out, ShaderType type,
     const char* precision = getPrecisionQualifier(defaultPrecision, Precision::DEFAULT);
     out << "precision " << precision << " float;\n";
     out << "precision " << precision << " int;\n";
-
-    // The version of the Metal Shading Language (MSL) we use does not have the invariant qualifier.
-    // New versions of MSL (> 2.1) have it, but we want to support older devices.
-    if (type == ShaderType::VERTEX && mTargetApi != TargetApi::METAL) {
-        out << "\n";
-        out << "invariant gl_Position;\n";
-    }
 
     out << SHADERS_COMMON_TYPES_FS_DATA;
 
@@ -120,7 +117,6 @@ io::sstream& CodeGenerator::generateEpilog(io::sstream& out) const {
 
 io::sstream& CodeGenerator::generateShaderMain(io::sstream& out, ShaderType type) const {
     if (type == ShaderType::VERTEX) {
-        out << SHADERS_SHADOWING_VS_DATA;
         out << SHADERS_MAIN_VS_DATA;
     } else if (type == ShaderType::FRAGMENT) {
         out << SHADERS_MAIN_FS_DATA;
@@ -218,6 +214,30 @@ io::sstream& CodeGenerator::generateShaderInputs(io::sstream& out, ShaderType ty
     }
     return out;
 }
+
+utils::io::sstream& CodeGenerator::generateOutput(utils::io::sstream& out, ShaderType type,
+        const utils::CString& name, size_t index,
+        MaterialBuilder::VariableQualifier qualifier,
+        MaterialBuilder::OutputType outputType) const {
+    if (name.empty() || type == ShaderType::VERTEX) {
+        return out;
+    }
+
+    // TODO: add and support additional variable qualifiers
+    (void) qualifier;
+    assert(qualifier == MaterialBuilder::VariableQualifier::OUT);
+
+    const char* typeString = getOutputTypeName(outputType);
+
+    out << "\n#define FRAG_OUTPUT" << index << " " << name.c_str() << "\n";
+    out << "\n#define FRAG_OUTPUT_AT" << index << " output_" << name.c_str() << "\n";
+    out << "\n#define FRAG_OUTPUT_TYPE" << index << " " << typeString << "\n";
+    out << "LAYOUT_LOCATION(" << index << ") out " << typeString <<
+        " output_" << name.c_str() << ";\n";
+
+    return out;
+}
+
 
 io::sstream& CodeGenerator::generateDepthShaderMain(io::sstream& out, ShaderType type) const {
     if (type == ShaderType::VERTEX) {
@@ -372,13 +392,6 @@ io::sstream& CodeGenerator::generateDefine(io::sstream& out, const char* name, b
     return out;
 }
 
-io::sstream& CodeGenerator::generateDefine(io::sstream& out, const char* name, float value) const {
-    char buffer[32];
-    snprintf(buffer, 32, "%.1f", value);
-    out << "#define " << name << " " << buffer << "\n";
-    return out;
-}
-
 io::sstream& CodeGenerator::generateDefine(io::sstream& out, const char* name, uint32_t value) const {
     out << "#define " << name << " " << value << "\n";
     return out;
@@ -386,14 +399,6 @@ io::sstream& CodeGenerator::generateDefine(io::sstream& out, const char* name, u
 
 io::sstream& CodeGenerator::generateDefine(io::sstream& out, const char* name, const char* string) const {
     out << "#define " << name << " " << string << "\n";
-    return out;
-}
-
-io::sstream& CodeGenerator::generateFunction(io::sstream& out, const char* returnType,
-        const char* name, const char* body) const {
-    out << "\n" << returnType << " " << name << "()";
-    out << " {\n" << body;
-    out << "\n}\n";
     return out;
 }
 
@@ -413,11 +418,20 @@ io::sstream& CodeGenerator::generateMaterialProperty(io::sstream& out,
 
 io::sstream& CodeGenerator::generateCommon(io::sstream& out, ShaderType type) const {
     out << SHADERS_COMMON_MATH_FS_DATA;
+    out << SHADERS_COMMON_SHADOWING_FS_DATA;
     if (type == ShaderType::VERTEX) {
     } else if (type == ShaderType::FRAGMENT) {
         out << SHADERS_COMMON_SHADING_FS_DATA;
         out << SHADERS_COMMON_GRAPHICS_FS_DATA;
         out << SHADERS_COMMON_MATERIAL_FS_DATA;
+    }
+    return out;
+}
+
+io::sstream& CodeGenerator::generateFog(io::sstream& out, ShaderType type) const {
+    if (type == ShaderType::VERTEX) {
+    } else if (type == ShaderType::FRAGMENT) {
+        out << SHADERS_FOG_FS_DATA;
     }
     return out;
 }
@@ -547,6 +561,11 @@ char const* CodeGenerator::getConstantName(MaterialBuilder::Property property) n
         case Property::NORMAL:               return "NORMAL";
         case Property::POST_LIGHTING_COLOR:  return "POST_LIGHTING_COLOR";
         case Property::CLIP_SPACE_TRANSFORM: return "CLIP_SPACE_TRANSFORM";
+        case Property::ABSORPTION:           return "ABSORPTION";
+        case Property::TRANSMISSION:         return "TRANSMISSION";
+        case Property::IOR:                  return "IOR";
+        case Property::MICRO_THICKNESS:      return "MICRO_THICKNESS";
+        case Property::BENT_NORMAL:          return "BENT_NORMAL";
     }
 }
 
@@ -574,28 +593,43 @@ char const* CodeGenerator::getUniformTypeName(UniformInterfaceBlock::Type type) 
     }
 }
 
+char const* CodeGenerator::getOutputTypeName(MaterialBuilder::OutputType type) noexcept {
+    using Type = UniformInterfaceBlock::Type;
+    switch (type) {
+        case MaterialBuilder::OutputType::FLOAT:  return "float";
+        case MaterialBuilder::OutputType::FLOAT2: return "float2";
+        case MaterialBuilder::OutputType::FLOAT3: return "float3";
+        case MaterialBuilder::OutputType::FLOAT4: return "float4";
+    }
+}
+
 char const* CodeGenerator::getSamplerTypeName(SamplerType type, SamplerFormat format,
         bool multisample) const noexcept {
+    assert(!multisample);   // multisample samplers not yet supported.
     switch (type) {
         case SamplerType::SAMPLER_2D:
-            if (!multisample) {
-                switch (format) {
-                    case SamplerFormat::INT:    return "isampler2D";
-                    case SamplerFormat::UINT:   return "usampler2D";
-                    case SamplerFormat::FLOAT:  return "sampler2D";
-                    case SamplerFormat::SHADOW: return "sampler2DShadow";
-                }
-            } else {
-                assert(format != SamplerFormat::SHADOW);
-                switch (format) {
-                    case SamplerFormat::INT:    return "ms_isampler2D";
-                    case SamplerFormat::UINT:   return "ms_usampler2D";
-                    case SamplerFormat::FLOAT:  return "ms_sampler2D";
-                    case SamplerFormat::SHADOW: return "sampler2DShadow";   // should not happen
-                }
+            switch (format) {
+                case SamplerFormat::INT:    return "isampler2D";
+                case SamplerFormat::UINT:   return "usampler2D";
+                case SamplerFormat::FLOAT:  return "sampler2D";
+                case SamplerFormat::SHADOW: return "sampler2DShadow";
+            }
+        case SamplerType::SAMPLER_3D:
+            assert(format != SamplerFormat::SHADOW);
+            switch (format) {
+                case SamplerFormat::INT:    return "isampler3D";
+                case SamplerFormat::UINT:   return "usampler3D";
+                case SamplerFormat::FLOAT:  return "sampler3D";
+                case SamplerFormat::SHADOW: return nullptr;
+            }
+        case SamplerType::SAMPLER_2D_ARRAY:
+            switch (format) {
+                case SamplerFormat::INT:    return "isampler2DArray";
+                case SamplerFormat::UINT:   return "usampler2DArray";
+                case SamplerFormat::FLOAT:  return "sampler2DArray";
+                case SamplerFormat::SHADOW: return "sampler2DArrayShadow";
             }
         case SamplerType::SAMPLER_CUBEMAP:
-            assert(!multisample);
             switch (format) {
                 case SamplerFormat::INT:    return "isamplerCube";
                 case SamplerFormat::UINT:   return "usamplerCube";
@@ -603,7 +637,6 @@ char const* CodeGenerator::getSamplerTypeName(SamplerType type, SamplerFormat fo
                 case SamplerFormat::SHADOW: return "samplerCubeShadow";
             }
         case SamplerType::SAMPLER_EXTERNAL:
-            assert(!multisample);
             assert(format != SamplerFormat::SHADOW);
             // Vulkan doesn't have external textures in the sense as GL. Vulkan external textures
             // are created via VK_ANDROID_external_memory_android_hardware_buffer, but they are

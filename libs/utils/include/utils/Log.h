@@ -28,11 +28,11 @@
 namespace utils {
 namespace io {
 
-class LogStream : public ostream {
+class UTILS_PUBLIC LogStream : public ostream {
 public:
 
     enum Priority {
-        DEBUG, ERROR, WARNING, INFO
+        LOG_DEBUG, LOG_ERROR, LOG_WARNING, LOG_INFO
     };
 
     explicit LogStream(Priority p) noexcept : mPriority(p) {}
@@ -45,7 +45,7 @@ private:
 
 } // namespace io
 
-struct Loggers {
+struct UTILS_PUBLIC Loggers {
     // DEBUG level logging stream
     io::LogStream& d;
 
@@ -59,7 +59,7 @@ struct Loggers {
     io::LogStream& i;
 };
 
-extern Loggers slog;
+extern UTILS_PUBLIC const Loggers slog;
 
 } // namespace utils
 

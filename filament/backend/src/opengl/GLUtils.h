@@ -22,23 +22,26 @@
 
 #include <backend/DriverEnums.h>
 
+#include <string>
+#include <unordered_set>
+
 #include "gl_headers.h"
 
 namespace filament {
 namespace GLUtils {
 
 void checkGLError(utils::io::ostream& out, const char* function, size_t line) noexcept;
-void checkFramebufferStatus(utils::io::ostream& out, const char* function, size_t line) noexcept;
+void checkFramebufferStatus(utils::io::ostream& out, GLenum target, const char* function, size_t line) noexcept;
 
 #ifdef NDEBUG
 #define CHECK_GL_ERROR(out)
-#define CHECK_GL_FRAMEBUFFER_STATUS(out)
+#define CHECK_GL_FRAMEBUFFER_STATUS(out, target)
 #else
 #ifdef _MSC_VER
     #define __PRETTY_FUNCTION__ __FUNCSIG__
 #endif
 #define CHECK_GL_ERROR(out) { GLUtils::checkGLError(out, __PRETTY_FUNCTION__, __LINE__); }
-#define CHECK_GL_FRAMEBUFFER_STATUS(out) { GLUtils::checkFramebufferStatus(out, __PRETTY_FUNCTION__, __LINE__); }
+#define CHECK_GL_FRAMEBUFFER_STATUS(out, target) { GLUtils::checkFramebufferStatus(out, target, __PRETTY_FUNCTION__, __LINE__); }
 #endif
 
 constexpr inline GLuint getComponentCount(backend::ElementType type) noexcept {
@@ -257,16 +260,36 @@ constexpr inline GLenum getFormat(backend::PixelDataFormat format) noexcept {
 constexpr inline GLenum getType(backend::PixelDataType type) noexcept {
     using PixelDataType = backend::PixelDataType;
     switch (type) {
-        case PixelDataType::UBYTE:              return GL_UNSIGNED_BYTE;
-        case PixelDataType::BYTE:               return GL_BYTE;
-        case PixelDataType::USHORT:             return GL_UNSIGNED_SHORT;
-        case PixelDataType::SHORT:              return GL_SHORT;
-        case PixelDataType::UINT:               return GL_UNSIGNED_INT;
-        case PixelDataType::INT:                return GL_INT;
-        case PixelDataType::HALF:               return GL_HALF_FLOAT;
-        case PixelDataType::FLOAT:              return GL_FLOAT;
-        case PixelDataType::UINT_10F_11F_11F_REV:  return GL_UNSIGNED_INT_10F_11F_11F_REV;
-        case PixelDataType::COMPRESSED:         return 0; // should never happen
+        case PixelDataType::UBYTE:                return GL_UNSIGNED_BYTE;
+        case PixelDataType::BYTE:                 return GL_BYTE;
+        case PixelDataType::USHORT:               return GL_UNSIGNED_SHORT;
+        case PixelDataType::SHORT:                return GL_SHORT;
+        case PixelDataType::UINT:                 return GL_UNSIGNED_INT;
+        case PixelDataType::INT:                  return GL_INT;
+        case PixelDataType::HALF:                 return GL_HALF_FLOAT;
+        case PixelDataType::FLOAT:                return GL_FLOAT;
+        case PixelDataType::UINT_10F_11F_11F_REV: return GL_UNSIGNED_INT_10F_11F_11F_REV;
+        case PixelDataType::USHORT_565:           return GL_UNSIGNED_SHORT_5_6_5;
+        case PixelDataType::UINT_2_10_10_10_REV:  return GL_UNSIGNED_INT_2_10_10_10_REV;
+        case PixelDataType::COMPRESSED:           return 0; // should never happen
+    }
+}
+
+constexpr inline GLenum getSwizzleChannel(backend::TextureSwizzle c) noexcept {
+    using TextureSwizzle = backend::TextureSwizzle;
+    switch (c) {
+        case TextureSwizzle::SUBSTITUTE_ZERO:
+            return GL_ZERO;
+        case TextureSwizzle::SUBSTITUTE_ONE:
+            return GL_ONE;
+        case TextureSwizzle::CHANNEL_0:
+            return GL_RED;
+        case TextureSwizzle::CHANNEL_1:
+            return GL_GREEN;
+        case TextureSwizzle::CHANNEL_2:
+            return GL_BLUE;
+        case TextureSwizzle::CHANNEL_3:
+            return GL_ALPHA;
     }
 }
 
@@ -387,6 +410,20 @@ constexpr /* inline */ GLenum getInternalFormat(backend::TextureFormat format) n
             return 0;
 #endif
 
+#if defined(GL_EXT_texture_sRGB) || defined(GL_EXT_texture_compression_s3tc_srgb)
+        case TextureFormat::DXT1_SRGB:         return GL_COMPRESSED_SRGB_S3TC_DXT1_EXT;
+        case TextureFormat::DXT1_SRGBA:        return GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT;
+        case TextureFormat::DXT3_SRGBA:        return GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT;
+        case TextureFormat::DXT5_SRGBA:        return GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT;
+#else
+        case TextureFormat::DXT1_SRGB:
+        case TextureFormat::DXT1_SRGBA:
+        case TextureFormat::DXT3_SRGBA:
+        case TextureFormat::DXT5_SRGBA:
+            // this should not happen
+            return 0;
+#endif
+
 #if defined(GL_KHR_texture_compression_astc_hdr)
         case TextureFormat::RGBA_ASTC_4x4:     return GL_COMPRESSED_RGBA_ASTC_4x4_KHR;
         case TextureFormat::RGBA_ASTC_5x4:     return GL_COMPRESSED_RGBA_ASTC_5x4_KHR;
@@ -451,6 +488,28 @@ constexpr /* inline */ GLenum getInternalFormat(backend::TextureFormat format) n
         case TextureFormat::UNUSED:
             return 0;
     }
+}
+
+class unordered_string_set : public std::unordered_set<std::string> {
+public:
+    bool has(const char* str) {
+        return find(std::string(str)) != end();
+    }
+};
+
+inline unordered_string_set split(const char* spacedList) {
+    unordered_string_set set;
+    const char* current = spacedList;
+    const char* head = current;
+    do {
+        head = strchr(current, ' ');
+        std::string s(current, head ? head - current : strlen(current));
+        if (s.length()) {
+            set.insert(std::move(s));
+        }
+        current = head + 1;
+    } while (head);
+    return set;
 }
 
 } // namespace GLUtils

@@ -154,6 +154,7 @@ public:
             case PixelDataType::BYTE:
                 // nothing to do
                 break;
+            case PixelDataType::USHORT_565:
             case PixelDataType::USHORT:
             case PixelDataType::SHORT:
             case PixelDataType::HALF:
@@ -167,6 +168,11 @@ public:
             case PixelDataType::UINT_10F_11F_11F_REV:
                 // Special case, format must be RGB and uses 4 bytes
                 assert(format == PixelDataFormat::RGB);
+                bpp = 4;
+                break;
+            case PixelDataType::UINT_2_10_10_10_REV:
+                // Special case, format must be RGBA and uses 4 bytes
+                assert(format == PixelDataFormat::RGBA);
                 bpp = 4;
                 break;
         }

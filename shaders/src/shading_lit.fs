@@ -71,16 +71,59 @@ void getCommonPixelParams(const MaterialInputs material, inout PixelParams pixel
     pixel.diffuseColor = computeDiffuseColor(baseColor, metallic);
     pixel.f0 = specularColor;
 #elif !defined(SHADING_MODEL_CLOTH)
+#if defined(HAS_REFRACTION) && (!defined(MATERIAL_HAS_REFLECTANCE) && defined(MATERIAL_HAS_IOR))
+    pixel.diffuseColor = baseColor.rgb;
+    // If refraction is enabled, and reflectance is not set in the material, but ior is,
+    // then use it -- othterwise proceed as usual.
+    pixel.f0 = vec3(iorToF0(material.ior, 1.0));
+#else
     pixel.diffuseColor = computeDiffuseColor(baseColor, material.metallic);
-
     // Assumes an interface from air to an IOR of 1.5 for dielectrics
     float reflectance = computeDielectricF0(material.reflectance);
     pixel.f0 = computeF0(baseColor, material.metallic, reflectance);
+#endif
+
 #else
     pixel.diffuseColor = baseColor.rgb;
     pixel.f0 = material.sheenColor;
 #if defined(MATERIAL_HAS_SUBSURFACE_COLOR)
     pixel.subsurfaceColor = material.subsurfaceColor;
+#endif
+#endif
+
+#if defined(HAS_REFRACTION)
+    // Air's Index of refraction is 1.000277 at STP but everybody uses 1.0
+    const float airIor = 1.0;
+#if !defined(MATERIAL_HAS_IOR)
+    // [common case] ior is not set in the material, deduce it from F0
+    float materialor = f0ToIor(pixel.f0.g);
+#else
+    // if ior is set in the material, use it (can lead to unrealistic materials)
+    float materialor = max(1.0, material.ior);
+#endif
+    pixel.etaIR = airIor / materialor;  // air -> material
+    pixel.etaRI = materialor / airIor;  // material -> air
+#if defined(MATERIAL_HAS_TRANSMISSION)
+    pixel.transmission = saturate(material.transmission);
+#else
+    pixel.transmission = 1.0;
+#endif
+#if defined(MATERIAL_HAS_ABSORPTION)
+#if defined(MATERIAL_HAS_THICKNESS) || defined(MATERIAL_HAS_MICRO_THICKNESS)
+    pixel.absorption = max(vec3(0.0), material.absorption);
+#else
+    pixel.absorption = saturate(material.absorption);
+#endif
+#else
+    pixel.absorption = vec3(0.0);
+#endif
+#if defined(MATERIAL_HAS_THICKNESS)
+    pixel.thickness = max(0.0, material.thickness);
+#endif
+#if defined(MATERIAL_HAS_MICRO_THICKNESS) && (REFRACTION_TYPE == REFRACTION_TYPE_THIN)
+    pixel.uThickness = max(0.0, material.microThickness);
+#else
+    pixel.uThickness = 0.0;
 #endif
 #endif
 }
@@ -119,8 +162,8 @@ void getRoughnessPixelParams(const MaterialInputs material, inout PixelParams pi
     float perceptualRoughness = material.roughness;
 #endif
 
-    // Clamp the roughness to a minimum value to avoid divisions by 0 during lighting
-    perceptualRoughness = clamp(perceptualRoughness, MIN_PERCEPTUAL_ROUGHNESS, 1.0);
+    // This is used by the refraction code and must be saved before we apply specular AA
+    pixel.perceptualRoughnessUnclamped = perceptualRoughness;
 
 #if defined(GEOMETRIC_SPECULAR_AA)
     perceptualRoughness = normalFiltering(perceptualRoughness, getWorldGeometricNormalVector());
@@ -134,9 +177,10 @@ void getRoughnessPixelParams(const MaterialInputs material, inout PixelParams pi
     perceptualRoughness = mix(perceptualRoughness, basePerceptualRoughness, pixel.clearCoat);
 #endif
 
+    // Clamp the roughness to a minimum value to avoid divisions by 0 during lighting
+    pixel.perceptualRoughness = clamp(perceptualRoughness, MIN_PERCEPTUAL_ROUGHNESS, 1.0);
     // Remaps the roughness to a perceptually linear roughness (roughness^2)
-    pixel.perceptualRoughness = perceptualRoughness;
-    pixel.roughness = perceptualRoughnessToRoughness(perceptualRoughness);
+    pixel.roughness = perceptualRoughnessToRoughness(pixel.perceptualRoughness);
 }
 
 void getSubsurfacePixelParams(const MaterialInputs material, inout PixelParams pixel) {
@@ -228,11 +272,8 @@ vec4 evaluateLights(const MaterialInputs material) {
 
 void addEmissive(const MaterialInputs material, inout vec4 color) {
 #if defined(MATERIAL_HAS_EMISSIVE)
-    // The emissive property applies independently of the shading model
-    // It is defined as a color + exposure compensation
     highp vec4 emissive = material.emissive;
-    highp float attenuation = computePreExposedIntensity(
-            pow(2.0, frameUniforms.ev100 + emissive.w - 3.0), frameUniforms.exposure);
+    highp float attenuation = mix(1.0, frameUniforms.exposure, emissive.w);
     color.rgb += emissive.rgb * attenuation;
 #endif
 }

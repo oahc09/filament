@@ -6,7 +6,7 @@
         }
     ],
     "types" : {
-        "_89" : {
+        "_91" : {
             "name" : "gl_PerVertex",
             "members" : [
                 {
@@ -19,18 +19,24 @@
                 }
             ]
         },
-        "_102" : {
+        "_104" : {
             "name" : "Block",
             "members" : [
                 {
                     "name" : "var",
                     "type" : "mat2x3",
-                    "row_major" : true,
                     "array" : [
                         4,
                         3
                     ],
-                    "offset" : 0
+                    "array_size_is_literal" : [
+                        true,
+                        true
+                    ],
+                    "offset" : 0,
+                    "array_stride" : 192,
+                    "matrix_stride" : 16,
+                    "row_major" : true
                 }
             ]
         }
@@ -51,7 +57,7 @@
     ],
     "ubos" : [
         {
-            "type" : "_102",
+            "type" : "_104",
             "name" : "Block",
             "block_size" : 576,
             "set" : 0,

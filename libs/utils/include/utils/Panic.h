@@ -248,7 +248,7 @@ namespace utils {
  * The Panic class provides the std::exception protocol, it is the base exception object
  * used for all thrown exceptions.
  */
-class Panic {
+class UTILS_PUBLIC Panic {
 public:
     virtual ~Panic() noexcept;
 
@@ -299,7 +299,7 @@ public:
  * interface common to all exceptions thrown by the framework.
  */
 template <typename T>
-class TPanic : public Panic {
+class UTILS_PUBLIC TPanic : public Panic {
 public:
     // std::exception protocol
     const char* what() const noexcept override;
@@ -313,7 +313,7 @@ public:
 
     /**
      * Depending on the mode set, either throws an exception of type T with the given reason plus
-     * extra informations about the error-site, or logs the error and calls std::terminate().
+     * extra information about the error-site, or logs the error and calls std::terminate().
      * This function never returns.
      * @param function the name of the function where the error was detected
      * @param file the file where the above function in implemented
@@ -328,7 +328,7 @@ public:
 
     /**
      * Depending on the mode set, either throws an exception of type T with the given reason plus
-     * extra informations about the error-site, or logs the error and calls std::terminate().
+     * extra information about the error-site, or logs the error and calls std::terminate().
      * This function never returns.
      * @param function the name of the function where the error was detected
      * @param file the file where the above function in implemented
@@ -386,7 +386,7 @@ void logAndPanic(
  * ASSERT_PRECONDITION uses this Panic to report a precondition failure.
  * @see ASSERT_PRECONDITION
  */
-class PreconditionPanic : public TPanic<PreconditionPanic> {
+class UTILS_PUBLIC PreconditionPanic : public TPanic<PreconditionPanic> {
     // Programming error, can be avoided
     // e.g.: invalid arguments
     using TPanic<PreconditionPanic>::TPanic;
@@ -399,7 +399,7 @@ class PreconditionPanic : public TPanic<PreconditionPanic> {
  * ASSERT_POSTCONDITION uses this Panic to report a postcondition failure.
  * @see ASSERT_POSTCONDITION
  */
-class PostconditionPanic : public TPanic<PostconditionPanic> {
+class UTILS_PUBLIC PostconditionPanic : public TPanic<PostconditionPanic> {
     // Usually only detectable at runtime
     // e.g.: dead-lock would occur, arithmetic errors
     using TPanic<PostconditionPanic>::TPanic;
@@ -412,7 +412,7 @@ class PostconditionPanic : public TPanic<PostconditionPanic> {
  * ASSERT_ARITHMETIC uses this Panic to report an arithmetic (postcondition) failure.
  * @see ASSERT_ARITHMETIC
  */
-class ArithmeticPanic : public TPanic<ArithmeticPanic> {
+class UTILS_PUBLIC ArithmeticPanic : public TPanic<ArithmeticPanic> {
     // A common case of post-condition error
     // e.g.: underflow, overflow, internal computations errors
     using TPanic<ArithmeticPanic>::TPanic;
@@ -429,7 +429,7 @@ class ArithmeticPanic : public TPanic<ArithmeticPanic> {
 #endif
 
 /**
- * PANIC_PRECONDITION is a macro that reports a PreconditionPannic
+ * PANIC_PRECONDITION is a macro that reports a PreconditionPanic
  * @param format printf-style string describing the error in more details
  */
 #define PANIC_PRECONDITION(format, ...)                                                            \
@@ -492,7 +492,7 @@ class ArithmeticPanic : public TPanic<ArithmeticPanic> {
  * @code
  *     int& Foo::operator[](size_t index) {
  *         ASSERT_POSTCONDITION(index<m_size, "cannot produce a valid return value");
- *         return m_arrar[index];
+ *         return m_array[index];
  *     }
  * @endcode
  */

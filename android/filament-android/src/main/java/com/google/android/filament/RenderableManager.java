@@ -16,10 +16,10 @@
 
 package com.google.android.filament;
 
-import android.support.annotation.IntRange;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.annotation.Size;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.Size;
 
 import java.nio.Buffer;
 import java.nio.BufferOverflowException;
@@ -268,6 +268,14 @@ public class RenderableManager {
 
         /**
          * Controls if this renderable casts shadows, false by default.
+         *
+         * If the View's shadow type is set to {@link View.ShadowType#VSM}, castShadows should only
+         * be disabled if either is true:
+         * <ul>
+         *   <li>{@link RenderableManager#setReceiveShadows} is also disabled</li>
+         *   <li>the object is guaranteed to not cast shadows on itself or other objects (for
+         *   example, a ground plane)</li>
+         * </ul>
          */
         @NonNull
         public Builder castShadows(boolean enabled) {
@@ -281,6 +289,17 @@ public class RenderableManager {
         @NonNull
         public Builder receiveShadows(boolean enabled) {
             nBuilderReceiveShadows(mNativeBuilder, enabled);
+            return this;
+        }
+
+        /**
+         * Controls if this renderable uses screen-space contact shadows. This is more
+         * expensive but can improve the quality of shadows, especially in large scenes.
+         * (off by default).
+         */
+        @NonNull
+        public Builder screenSpaceContactShadows(boolean enabled) {
+            nBuilderScreenSpaceContactShadows(mNativeBuilder, enabled);
             return this;
         }
 
@@ -443,6 +462,15 @@ public class RenderableManager {
     }
 
     /**
+     * Changes whether or not frustum culling is on.
+     *
+     * @see Builder#culling
+     */
+    public void setCulling(@EntityInstance int i, boolean enabled) {
+        nSetCulling(mNativeObject, i, enabled);
+    }
+
+    /**
      * Changes whether or not the renderable casts shadows.
      *
      * @see Builder#castShadows
@@ -458,6 +486,16 @@ public class RenderableManager {
      */
     public void setReceiveShadows(@EntityInstance int i, boolean enabled) {
         nSetReceiveShadows(mNativeObject, i, enabled);
+    }
+
+    /**
+     * Changes whether or not the renderable can use screen-space contact shadows.
+
+     *
+     * @see Builder#screenSpaceContactShadows
+     */
+    public void setScreenSpaceContactShadows(@EntityInstance int i, boolean enabled) {
+        nSetScreenSpaceContactShadows(mNativeObject, i, enabled);
     }
 
     /**
@@ -523,8 +561,7 @@ public class RenderableManager {
     public @NonNull MaterialInstance getMaterialInstanceAt(@EntityInstance int i,
             @IntRange(from = 0) int primitiveIndex) {
         long nativeMatInstance = nGetMaterialInstanceAt(mNativeObject, i, primitiveIndex);
-        long nativeMaterial = nGetMaterialAt(mNativeObject, i, primitiveIndex);
-        return new MaterialInstance(nativeMaterial, nativeMatInstance);
+        return new MaterialInstance(nativeMatInstance);
     }
 
     /**
@@ -614,6 +651,7 @@ public class RenderableManager {
     private static native void nBuilderCulling(long nativeBuilder, boolean enabled);
     private static native void nBuilderCastShadows(long nativeBuilder, boolean enabled);
     private static native void nBuilderReceiveShadows(long nativeBuilder, boolean enabled);
+    private static native void nBuilderScreenSpaceContactShadows(long nativeBuilder, boolean enabled);
     private static native void nBuilderSkinning(long nativeBuilder, int boneCount);
     private static native int nBuilderSkinningBones(long nativeBuilder, int boneCount, Buffer bones, int remaining);
     private static native void nBuilderMorphing(long nativeBuilder, boolean enabled);
@@ -624,8 +662,10 @@ public class RenderableManager {
     private static native void nSetAxisAlignedBoundingBox(long nativeRenderableManager, int i, float cx, float cy, float cz, float ex, float ey, float ez);
     private static native void nSetLayerMask(long nativeRenderableManager, int i, int select, int value);
     private static native void nSetPriority(long nativeRenderableManager, int i, int priority);
+    private static native void nSetCulling(long nativeRenderableManager, int i, boolean enabled);
     private static native void nSetCastShadows(long nativeRenderableManager, int i, boolean enabled);
     private static native void nSetReceiveShadows(long nativeRenderableManager, int i, boolean enabled);
+    private static native void nSetScreenSpaceContactShadows(long nativeRenderableManager, int i, boolean enabled);
     private static native boolean nIsShadowCaster(long nativeRenderableManager, int i);
     private static native boolean nIsShadowReceiver(long nativeRenderableManager, int i);
     private static native void nGetAxisAlignedBoundingBox(long nativeRenderableManager, int i, float[] center, float[] halfExtent);

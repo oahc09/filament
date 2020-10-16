@@ -23,16 +23,13 @@
 #include <filament/MaterialEnums.h>
 
 #include <backend/BufferDescriptor.h>
-
 #include <backend/DriverEnums.h>
 
 #include <utils/compiler.h>
 
 namespace filament {
 
-namespace details {
 class FVertexBuffer;
-} // namespace details
 
 class Engine;
 
@@ -145,7 +142,7 @@ public:
         VertexBuffer* build(Engine& engine);
 
     private:
-        friend class details::FVertexBuffer;
+        friend class FVertexBuffer;
     };
 
     /**
@@ -157,7 +154,7 @@ public:
     /**
      * Asynchronously copy-initializes the specified buffer from the given buffer data.
      *
-     * @param engine Reference to the filament::Engine to associate this IndexBuffer with.
+     * @param engine Reference to the filament::Engine to associate this VertexBuffer with.
      * @param bufferIndex Index of the buffer to initialize. Must be between 0
      *                    and Builder::bufferCount() - 1.
      * @param buffer A BufferDescriptor representing the data used to initialize the buffer at
@@ -211,6 +208,7 @@ public:
      * has additional capabilities and a daisy-chain API. Be sure to explicitly link libgeometry
      * since its dependency might be removed in future versions of libfilament.
      */
+    UTILS_DEPRECATED
     static void populateTangentQuaternions(const QuatTangentContext& ctx);
 };
 

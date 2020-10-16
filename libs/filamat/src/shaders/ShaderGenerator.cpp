@@ -20,6 +20,7 @@
 #include <private/filament/UniformInterfaceBlock.h>
 #include <filament/MaterialEnums.h>
 
+#include <private/filament/EngineEnums.h>
 #include <private/filament/SibGenerator.h>
 #include <private/filament/UibGenerator.h>
 #include <private/filament/Variant.h>
@@ -45,9 +46,22 @@ static const char* getShadingDefine(filament::Shading shading) noexcept {
 }
 
 static void generateMaterialDefines(utils::io::sstream& os, const CodeGenerator& cg,
-        MaterialBuilder::PropertyList const properties) noexcept {
+        MaterialBuilder::PropertyList const properties,
+        const MaterialBuilder::PreprocessorDefineList& defines) noexcept {
     for (size_t i = 0; i < MaterialBuilder::MATERIAL_PROPERTIES_COUNT; i++) {
         cg.generateMaterialProperty(os, static_cast<MaterialBuilder::Property>(i), properties[i]);
+    }
+    // synthetic defines
+    bool hasTBN =
+            properties[static_cast<int>(MaterialBuilder::Property::ANISOTROPY)]         ||
+            properties[static_cast<int>(MaterialBuilder::Property::NORMAL)]             ||
+            properties[static_cast<int>(MaterialBuilder::Property::BENT_NORMAL)]        ||
+            properties[static_cast<int>(MaterialBuilder::Property::CLEAR_COAT_NORMAL)];
+    cg.generateDefine(os, "MATERIAL_NEEDS_TBN", hasTBN);
+
+    // Additional, user-provided defines.
+    for (const auto& define : defines) {
+        cg.generateDefine(os, define.name.c_str(), define.value.c_str());
     }
 }
 
@@ -102,8 +116,7 @@ static void appendShader(utils::io::sstream& ss,
         const utils::CString& shader, size_t lineOffset) noexcept {
     if (!shader.empty()) {
         size_t lines = countLines(ss.c_str());
-        ss << "#line " << lineOffset;
-        if (shader[0] != '\n') ss << "\n";
+        ss << "#line " << lineOffset + 1 << '\n';
         ss << shader.c_str();
         if (shader[shader.size() - 1] != '\n') {
             ss << "\n";
@@ -117,17 +130,21 @@ static void appendShader(utils::io::sstream& ss,
 ShaderGenerator::ShaderGenerator(
         MaterialBuilder::PropertyList const& properties,
         MaterialBuilder::VariableList const& variables,
+        MaterialBuilder::OutputList const& outputs,
+        MaterialBuilder::PreprocessorDefineList const& defines,
         utils::CString const& materialCode, size_t lineOffset,
         utils::CString const& materialVertexCode, size_t vertexLineOffset,
         MaterialBuilder::MaterialDomain materialDomain) noexcept {
     std::copy(std::begin(properties), std::end(properties), std::begin(mProperties));
     std::copy(std::begin(variables), std::end(variables), std::begin(mVariables));
+    std::copy(std::begin(outputs), std::end(outputs), std::back_inserter(mOutputs));
 
     mMaterialCode = materialCode;
     mMaterialVertexCode = materialVertexCode;
     mMaterialLineOffset = lineOffset;
     mMaterialVertexLineOffset = vertexLineOffset;
     mMaterialDomain = materialDomain;
+    mDefines = defines;
 
     if (mMaterialCode.empty()) {
         if (mMaterialDomain == MaterialBuilder::MaterialDomain::SURFACE) {
@@ -149,7 +166,7 @@ ShaderGenerator::ShaderGenerator(
     }
 }
 
-const std::string ShaderGenerator::createVertexProgram(filament::backend::ShaderModel shaderModel,
+std::string ShaderGenerator::createVertexProgram(filament::backend::ShaderModel shaderModel,
         MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
         MaterialInfo const& material, uint8_t variantKey, filament::Interpolation interpolation,
         filament::VertexDomain vertexDomain) const noexcept {
@@ -166,15 +183,19 @@ const std::string ShaderGenerator::createVertexProgram(filament::backend::Shader
 
     cg.generateProlog(vs, ShaderType::VERTEX, material.hasExternalSamplers);
 
+    cg.generateDefine(vs, "MAX_SHADOW_CASTING_SPOTS", uint32_t(CONFIG_MAX_SHADOW_CASTING_SPOTS));
+
     cg.generateDefine(vs, "FLIP_UV_ATTRIBUTE", material.flipUV);
 
     bool litVariants = lit || material.hasShadowMultiplier;
     cg.generateDefine(vs, "HAS_DIRECTIONAL_LIGHTING", litVariants && variant.hasDirectionalLighting());
+    cg.generateDefine(vs, "HAS_DYNAMIC_LIGHTING", litVariants && variant.hasDynamicLighting());
     cg.generateDefine(vs, "HAS_SHADOWING", litVariants && variant.hasShadowReceiver());
     cg.generateDefine(vs, "HAS_SHADOW_MULTIPLIER", material.hasShadowMultiplier);
     cg.generateDefine(vs, "HAS_SKINNING_OR_MORPHING", variant.hasSkinningOrMorphing());
+    cg.generateDefine(vs, "HAS_VSM", variant.hasVsm());
     cg.generateDefine(vs, getShadingDefine(material.shading), true);
-    generateMaterialDefines(vs, cg, mProperties);
+    generateMaterialDefines(vs, cg, mProperties, mDefines);
 
     AttributeBitset attributes = material.requiredAttributes;
     if (variant.hasSkinningOrMorphing()) {
@@ -205,6 +226,10 @@ const std::string ShaderGenerator::createVertexProgram(filament::backend::Shader
             BindingPoints::PER_VIEW, UibGenerator::getPerViewUib());
     cg.generateUniforms(vs, ShaderType::VERTEX,
             BindingPoints::PER_RENDERABLE, UibGenerator::getPerRenderableUib());
+    if (litVariants && variant.hasShadowReceiver()) {
+        cg.generateUniforms(vs, ShaderType::VERTEX,
+                BindingPoints::SHADOW, UibGenerator::getShadowUib());
+    }
     if (variant.hasSkinningOrMorphing()) {
         cg.generateUniforms(vs, ShaderType::VERTEX,
                 BindingPoints::PER_RENDERABLE_BONES,
@@ -224,8 +249,8 @@ const std::string ShaderGenerator::createVertexProgram(filament::backend::Shader
     cg.generateCommonMaterial(vs, ShaderType::VERTEX);
 
     if (variant.isDepthPass() &&
-        (material.blendingMode != BlendingMode::MASKED) &&
-        !hasCustomDepthShader()) {
+            (material.blendingMode != BlendingMode::MASKED) &&
+            !hasCustomDepthShader()) {
         // these variants are special and are treated as DEPTH variants. Filament will never
         // request that variant for the color pass.
         cg.generateDepthShaderMain(vs, ShaderType::VERTEX);
@@ -260,7 +285,7 @@ static bool isMobileTarget(filament::backend::ShaderModel model) {
     }
 }
 
-const std::string ShaderGenerator::createFragmentProgram(filament::backend::ShaderModel shaderModel,
+std::string ShaderGenerator::createFragmentProgram(filament::backend::ShaderModel shaderModel,
         MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
         MaterialInfo const& material, uint8_t variantKey,
         filament::Interpolation interpolation) const noexcept {
@@ -280,9 +305,39 @@ const std::string ShaderGenerator::createFragmentProgram(filament::backend::Shad
 
     cg.generateDefine(fs, "CLEAR_COAT_IOR_CHANGE", material.clearCoatIorChange);
 
-    bool specularAO = material.specularAOSet ?
-            material.specularAO : !isMobileTarget(shaderModel);
-    cg.generateDefine(fs, "SPECULAR_AMBIENT_OCCLUSION", specularAO ? 1u : 0u);
+    cg.generateDefine(fs, "MAX_SHADOW_CASTING_SPOTS", uint32_t(CONFIG_MAX_SHADOW_CASTING_SPOTS));
+
+    auto defaultSpecularAO = isMobileTarget(shaderModel) ?
+            SpecularAmbientOcclusion::NONE : SpecularAmbientOcclusion::SIMPLE;
+    auto specularAO = material.specularAOSet ? material.specularAO : defaultSpecularAO;
+    cg.generateDefine(fs, "SPECULAR_AMBIENT_OCCLUSION", uint32_t(specularAO));
+
+    cg.generateDefine(fs, "HAS_REFRACTION", material.refractionMode != RefractionMode::NONE);
+    if (material.refractionMode != RefractionMode::NONE) {
+        cg.generateDefine(fs, "REFRACTION_MODE_CUBEMAP", uint32_t(RefractionMode::CUBEMAP));
+        cg.generateDefine(fs, "REFRACTION_MODE_SCREEN_SPACE", uint32_t(RefractionMode::SCREEN_SPACE));
+        switch (material.refractionMode) {
+            case RefractionMode::NONE:
+                // can't be here
+                break;
+            case RefractionMode::CUBEMAP:
+                cg.generateDefine(fs, "REFRACTION_MODE", "REFRACTION_MODE_CUBEMAP");
+                break;
+            case RefractionMode::SCREEN_SPACE:
+                cg.generateDefine(fs, "REFRACTION_MODE", "REFRACTION_MODE_SCREEN_SPACE");
+                break;
+        }
+        cg.generateDefine(fs, "REFRACTION_TYPE_SOLID", uint32_t(RefractionType::SOLID));
+        cg.generateDefine(fs, "REFRACTION_TYPE_THIN", uint32_t(RefractionType::THIN));
+        switch (material.refractionType) {
+            case RefractionType::SOLID:
+                cg.generateDefine(fs, "REFRACTION_TYPE", "REFRACTION_TYPE_SOLID");
+                break;
+            case RefractionType::THIN:
+                cg.generateDefine(fs, "REFRACTION_TYPE", "REFRACTION_TYPE_THIN");
+                break;
+        }
+    }
 
     bool multiBounceAO = material.multiBounceAOSet ?
             material.multiBounceAO : !isMobileTarget(shaderModel);
@@ -294,6 +349,8 @@ const std::string ShaderGenerator::createFragmentProgram(filament::backend::Shad
     cg.generateDefine(fs, "HAS_DYNAMIC_LIGHTING", litVariants && variant.hasDynamicLighting());
     cg.generateDefine(fs, "HAS_SHADOWING", litVariants && variant.hasShadowReceiver());
     cg.generateDefine(fs, "HAS_SHADOW_MULTIPLIER", material.hasShadowMultiplier);
+    cg.generateDefine(fs, "HAS_FOG", variant.hasFog());
+    cg.generateDefine(fs, "HAS_VSM", variant.hasVsm());
 
     // material defines
     cg.generateDefine(fs, "MATERIAL_HAS_DOUBLE_SIDED_CAPABILITY", material.hasDoubleSidedCapability);
@@ -342,7 +399,7 @@ const std::string ShaderGenerator::createFragmentProgram(filament::backend::Shad
             break;
     }
     cg.generateDefine(fs, getShadingDefine(material.shading), true);
-    generateMaterialDefines(fs, cg, mProperties);
+    generateMaterialDefines(fs, cg, mProperties, mDefines);
 
     cg.generateShaderInputs(fs, ShaderType::FRAGMENT, material.requiredAttributes, interpolation);
 
@@ -356,13 +413,15 @@ const std::string ShaderGenerator::createFragmentProgram(filament::backend::Shad
     cg.generateUniforms(fs, ShaderType::FRAGMENT,
             BindingPoints::PER_VIEW, UibGenerator::getPerViewUib());
     cg.generateUniforms(fs, ShaderType::FRAGMENT,
+            BindingPoints::PER_RENDERABLE, UibGenerator::getPerRenderableUib());
+    cg.generateUniforms(fs, ShaderType::FRAGMENT,
             BindingPoints::LIGHTS, UibGenerator::getLightsUib());
     cg.generateUniforms(fs, ShaderType::FRAGMENT,
             BindingPoints::PER_MATERIAL_INSTANCE, material.uib);
     cg.generateSeparator(fs);
     cg.generateSamplers(fs,
             material.samplerBindings.getBlockOffset(BindingPoints::PER_VIEW),
-            SibGenerator::getPerViewSib());
+            SibGenerator::getPerViewSib(variantKey));
     cg.generateSamplers(fs,
             material.samplerBindings.getBlockOffset(BindingPoints::PER_MATERIAL_INSTANCE),
             material.sib);
@@ -372,6 +431,7 @@ const std::string ShaderGenerator::createFragmentProgram(filament::backend::Shad
     cg.generateGetters(fs, ShaderType::FRAGMENT);
     cg.generateCommonMaterial(fs, ShaderType::FRAGMENT);
     cg.generateParameters(fs, ShaderType::FRAGMENT);
+    cg.generateFog(fs, ShaderType::FRAGMENT);
 
     // shading model
     if (variant.isDepthPass()) {
@@ -406,7 +466,7 @@ void ShaderGenerator::fixupExternalSamplers(filament::backend::ShaderModel sm,
     }
 }
 
-const std::string ShaderGenerator::createPostProcessVertexProgram(
+std::string ShaderGenerator::createPostProcessVertexProgram(
         filament::backend::ShaderModel sm, MaterialBuilder::TargetApi targetApi,
         MaterialBuilder::TargetLanguage targetLanguage, MaterialInfo const& material,
         uint8_t variant, const filament::SamplerBindingMap& samplerBindingMap) const noexcept {
@@ -447,7 +507,7 @@ const std::string ShaderGenerator::createPostProcessVertexProgram(
     return vs.c_str();
 }
 
-const std::string ShaderGenerator::createPostProcessFragmentProgram(
+std::string ShaderGenerator::createPostProcessFragmentProgram(
         filament::backend::ShaderModel sm, MaterialBuilder::TargetApi targetApi,
         MaterialBuilder::TargetLanguage targetLanguage, MaterialInfo const& material,
         uint8_t variant, const filament::SamplerBindingMap& samplerBindingMap) const noexcept {
@@ -477,6 +537,19 @@ const std::string ShaderGenerator::createPostProcessFragmentProgram(
 
     cg.generateCommon(fs, ShaderType::FRAGMENT);
     cg.generatePostProcessGetters(fs, ShaderType::FRAGMENT);
+
+    // Generate post-process outputs.
+    size_t outputIndex = 0;
+    for (const auto& output : mOutputs) {
+        if (output.target == MaterialBuilder::OutputTarget::COLOR) {
+            cg.generateOutput(fs, ShaderType::FRAGMENT, output.name, outputIndex++,
+                    output.qualifier, output.type);
+        }
+        if (output.target == MaterialBuilder::OutputTarget::DEPTH) {
+            cg.generateDefine(fs, "FRAG_OUTPUT_DEPTH", 1u);
+        }
+    }
+
     cg.generatePostProcessInputs(fs, ShaderType::FRAGMENT);
 
     appendShader(fs, mMaterialCode, mMaterialLineOffset);

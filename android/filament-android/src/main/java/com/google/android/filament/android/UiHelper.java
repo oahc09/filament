@@ -19,8 +19,8 @@ package com.google.android.filament.android;
 import android.graphics.PixelFormat;
 import android.graphics.SurfaceTexture;
 import android.os.Build;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -30,8 +30,8 @@ import android.view.TextureView;
 import com.google.android.filament.SwapChain;
 
 /**
- * UiHelper is a simple class that can manage either a SurfaceView or a TextureView so it can
- * be used to render into with Filament.
+ * UiHelper is a simple class that can manage either a SurfaceView, TextureView, or a SurfaceHolder
+ * so it can be used to render into with Filament.
  *
  * Here is a simple example with a SurfaceView. The code would be exactly the same with a
  * TextureView:
@@ -131,6 +131,7 @@ public class UiHelper {
     private RenderSurface mRenderSurface;
 
     private boolean mOpaque = true;
+    private boolean mOverlay = false;
 
     /**
      * Enum used to decide whether UiHelper should perform extra error checking.
@@ -173,7 +174,7 @@ public class UiHelper {
         void detach();
     }
 
-    private class SurfaceViewHandler implements RenderSurface {
+    private static class SurfaceViewHandler implements RenderSurface {
         private SurfaceView mSurfaceView;
 
         SurfaceViewHandler(SurfaceView surface) {
@@ -183,6 +184,23 @@ public class UiHelper {
         @Override
         public void resize(int width, int height) {
             mSurfaceView.getHolder().setFixedSize(width, height);
+        }
+
+        @Override
+        public void detach() {
+        }
+    }
+
+    private static class SurfaceHolderHandler implements RenderSurface {
+        private SurfaceHolder mSurfaceHolder;
+
+        SurfaceHolderHandler(SurfaceHolder surface) {
+            mSurfaceHolder = surface;
+        }
+
+        @Override
+        public void resize(int width, int height) {
+            mSurfaceHolder.setFixedSize(width, height);
         }
 
         @Override
@@ -257,8 +275,8 @@ public class UiHelper {
     }
 
     /**
-     * Free resources associated to the native window specified in {@link #attachTo(SurfaceView)}
-     * or {@link #attachTo(TextureView)}.
+     * Free resources associated to the native window specified in {@link #attachTo(SurfaceView)},
+     * {@link #attachTo(TextureView)}, or {@link #attachTo(SurfaceHolder)}.
      */
     public void detach() {
         destroySwapChain();
@@ -314,13 +332,39 @@ public class UiHelper {
      * Controls whether the render target (SurfaceView or TextureView) is opaque or not.
      * The render target is considered opaque by default.
      *
-     * Must be called before calling {@link #attachTo(SurfaceView)}
-     * or {@link #attachTo(TextureView)}.
+     * Must be called before calling {@link #attachTo(SurfaceView)}, {@link #attachTo(TextureView)},
+     * or {@link #attachTo(SurfaceHolder)}.
      *
      * @param opaque Indicates whether the render target should be opaque. True by default.
      */
     public void setOpaque(boolean opaque) {
         mOpaque = opaque;
+    }
+
+    /**
+     * Returns true if the SurfaceView used as a render target should be positioned above
+     * other surfaces but below the activity's surface. False by default.
+     */
+    public boolean isMediaOverlay() {
+        return mOverlay;
+    }
+
+    /**
+     * Controls whether the surface of the SurfaceView used as a render target should be
+     * positioned above other surfaces but below the activity's surface. This property
+     * only has an effect when used in combination with {@link #setOpaque(boolean) setOpaque(false)}
+     * and does not affect TextureView targets.
+     *
+     * Must be called before calling {@link #attachTo(SurfaceView)}
+     * or {@link #attachTo(TextureView)}.
+     *
+     * Has no effect when using {@link #attachTo(SurfaceHolder)}.
+     *
+     * @param overlay Indicates whether the render target should be rendered below the activity's
+     *                surface when transparent.
+     */
+    public void setMediaOverlay(boolean overlay) {
+        mOverlay = overlay;
     }
 
     /**
@@ -340,10 +384,17 @@ public class UiHelper {
      */
     public void attachTo(@NonNull SurfaceView view) {
         if (attach(view)) {
-            if (!isOpaque()) {
-                view.setZOrderOnTop(true);
-                view.getHolder().setFormat(PixelFormat.TRANSLUCENT);
+            boolean translucent = !isOpaque();
+            // setZOrderOnTop() and setZOrderMediaOverlay() override each other,
+            // we must only call one of them
+            if (isMediaOverlay()) {
+                view.setZOrderMediaOverlay(translucent);
+            } else {
+                view.setZOrderOnTop(translucent);
             }
+
+            int format = isOpaque() ? PixelFormat.OPAQUE : PixelFormat.TRANSLUCENT;
+            view.getHolder().setFormat(format);
 
             mRenderSurface = new SurfaceViewHandler(view);
 
@@ -371,13 +422,14 @@ public class UiHelper {
 
             SurfaceHolder holder = view.getHolder();
             holder.addCallback(callback);
-            holder.setFixedSize(mDesiredWidth, mDesiredHeight);
+            if (mDesiredWidth > 0 && mDesiredHeight > 0) {
+                holder.setFixedSize(mDesiredWidth, mDesiredHeight);
+            }
 
             // in case the SurfaceView's surface already existed
             final Surface surface = holder.getSurface();
             if (surface != null && surface.isValid()) {
                 callback.surfaceCreated(holder);
-                int format = isOpaque() ? PixelFormat.OPAQUE : PixelFormat.TRANSLUCENT;
                 callback.surfaceChanged(holder, format,
                         holder.getSurfaceFrame().width(), holder.getSurfaceFrame().height());
             }
@@ -423,7 +475,12 @@ public class UiHelper {
                 public void onSurfaceTextureSizeChanged(
                         SurfaceTexture surfaceTexture, int width, int height) {
                     if (LOGGING) Log.d(LOG_TAG, "onSurfaceTextureSizeChanged()");
-                    mRenderCallback.onResized(width, height);
+                    if (mDesiredWidth > 0 && mDesiredHeight > 0) {
+                        surfaceTexture.setDefaultBufferSize(mDesiredWidth, mDesiredHeight);
+                        mRenderCallback.onResized(mDesiredWidth, mDesiredHeight);
+                    } else {
+                        mRenderCallback.onResized(width, height);
+                    }
                 }
 
                 @Override
@@ -443,6 +500,55 @@ public class UiHelper {
             if (view.isAvailable()) {
                 SurfaceTexture surfaceTexture = view.getSurfaceTexture();
                 listener.onSurfaceTextureAvailable(surfaceTexture, mDesiredWidth, mDesiredHeight);
+            }
+        }
+    }
+
+    /**
+     * Associate UiHelper with a SurfaceHolder.
+     *
+     * As soon as a Surface is created, we'll create the
+     * EGL resources needed, and call user callbacks if needed.
+     */
+    public void attachTo(@NonNull SurfaceHolder holder) {
+        if (attach(holder)) {
+            int format = isOpaque() ? PixelFormat.OPAQUE : PixelFormat.TRANSLUCENT;
+            holder.setFormat(format);
+
+            mRenderSurface = new SurfaceHolderHandler(holder);
+
+            final SurfaceHolder.Callback callback = new SurfaceHolder.Callback() {
+                @Override
+                public void surfaceCreated(SurfaceHolder surfaceHolder) {
+                    if (LOGGING) Log.d(LOG_TAG, "surfaceCreated()");
+                    createSwapChain(holder.getSurface());
+                }
+
+                @Override
+                public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                    // Note: this is always called at least once after surfaceCreated()
+                    if (LOGGING) Log.d(LOG_TAG, "surfaceChanged(" + width + ", " + height + ")");
+                    mRenderCallback.onResized(width, height);
+                }
+
+                @Override
+                public void surfaceDestroyed(SurfaceHolder surfaceHolder) {
+                    if (LOGGING) Log.d(LOG_TAG, "surfaceDestroyed()");
+                    destroySwapChain();
+                }
+            };
+
+            holder.addCallback(callback);
+            if (mDesiredWidth > 0 && mDesiredHeight > 0) {
+                holder.setFixedSize(mDesiredWidth, mDesiredHeight);
+            }
+
+            // in case the SurfaceHolder's surface already existed
+            final Surface surface = holder.getSurface();
+            if (surface != null && surface.isValid()) {
+                callback.surfaceCreated(holder);
+                callback.surfaceChanged(holder, format,
+                        holder.getSurfaceFrame().width(), holder.getSurfaceFrame().height());
             }
         }
     }

@@ -26,22 +26,37 @@ import * as glm from "gl-matrix";
 export as namespace Filament;
 
 export function getSupportedFormatSuffix(desired: string): void;
-export function init(assets: string[], onready: () => void): void;
-export function fetch(assets: string[], onready: () => void): void;
+export function init(assets: string[], onready?: (() => void) | null): void;
+export function fetch(assets: string[], onDone?: (() => void) | null, onFetched?: ((name: string) => void) | null): void;
+export function clearAssetCache(): void;
 
 export const assets: {[url: string]: Uint8Array};
+
+/**
+ * May be either a string exactly containing a URL loaded with Filament.init() or Filament.fetch(),
+ * OR any TypedArray such as Uint8Array, Float32Array, etc., all of which match the ArrayBufferView
+ * interface.
+ */
+export type BufferReference = string | ArrayBufferView;
 
 export type float2 = glm.vec2|number[];
 export type float3 = glm.vec3|number[];
 export type float4 = glm.vec4|number[];
+export type double4 = glm.vec4|number[];
 export type mat3 = glm.mat3|number[];
 export type mat4 = glm.mat4|number[];
 export type quat = glm.quat|number[];
 
-export class Entity {}
-export class Skybox {}
-export class Texture {}
+/** A C++ std::vector. */
+export interface Vector<T> {
+    size(): number;
+    get(i: number): T;
+}
+
+export function vectorToArray<T>(vector: Vector<T>): T[];
+
 export class SwapChain {}
+export class ColorGrading {}
 
 export interface Box {
     center: float3;
@@ -51,6 +66,114 @@ export interface Box {
 export interface Aabb {
     min: float3;
     max: float3;
+}
+
+export interface Renderer$ClearOptions {
+    clearColor?: float4;
+    clear?: boolean;
+    discard?: boolean;
+}
+
+export interface LightManager$ShadowOptions {
+    mapSize?: number;
+    shadowCascades?: number;
+    constantBias?: number;
+    normalBias?: number;
+    shadowFar?: number;
+    shadowNearHint?: number;
+    shadowFarHint?: number;
+    stable?: boolean;
+    polygonOffsetConstant?: number;
+    polygonOffsetSlope?: number;
+    screenSpaceContactShadows?: boolean;
+    stepCount?: number;
+    maxShadowDistance?: number;
+}
+
+export interface View$AmbientOcclusionOptions {
+    radius?: number;
+    power?: number;
+    bias?: number;
+    resolution?: number;
+    intensity?: number;
+    quality?: View$QualityLevel;
+}
+
+export interface View$DepthOfFieldOptions {
+    focusDistance?: number;
+    cocScale?: number;
+    maxApertureDiameter?: number;
+    enabled?: boolean;
+}
+
+export interface View$BloomOptions {
+    dirtStrength?: number;
+    strength?: number;
+    resolution?: number;
+    anamorphism?: number;
+    levels?: number;
+    blendMode?: View$BloomOptions$BlendMode;
+    threshold?: boolean;
+    enabled?: boolean;
+    // TODO: add support for dirt texture in BloomOptions.
+}
+
+export interface View$FogOptions {
+    distance?: number;
+    maximumOpacity?: number;
+    height?: number;
+    heightFalloff?: number;
+    color?: float3;
+    density?: number;
+    inScatteringStart?: number;
+    inScatteringSize?: number;
+    fogColorFromIbl?: boolean;
+    enabled?: boolean;
+}
+
+export interface View$VignetteOptions {
+    midPoint?: number;
+    roundness?: number;
+    feather?: number;
+    color?: float3;
+    enabled?: boolean;
+}
+
+// Clients should use the [PixelBuffer/CompressedPixelBuffer] helper function to contruct PixelBufferDescriptor objects.
+export class driver$PixelBufferDescriptor {
+    constructor(byteLength: number, format: PixelDataFormat, datatype: PixelDataType);
+    constructor(byteLength: number, cdtype: CompressedPixelDataType, imageSize: number, compressed: boolean);
+    getBytes(): ArrayBuffer;
+}
+
+// Clients should use createTextureFromKtx/ImageFile helper functions if low level control is not needed
+export class Texture$Builder {
+    public width(width: number): Texture$Builder;
+    public height(height: number): Texture$Builder;
+    public depth(depth: number): Texture$Builder;
+    public levels(levels: number): Texture$Builder;
+    public sampler(sampler: Texture$Sampler): Texture$Builder;
+    public format(format: Texture$InternalFormat): Texture$Builder;
+    public usage(usage: Texture$Usage): Texture$Builder;
+    public build(engine: Engine) : Texture;
+}
+
+export class Texture {
+    public static Builder(): Texture$Builder;
+    public setImage(engine: Engine, level: number, pbd: driver$PixelBufferDescriptor): void;
+    public setImageCube(engine: Engine, level: number, pbd: driver$PixelBufferDescriptor) : void;
+    public generateMipmaps(engine: Engine) : void;
+}
+
+// TODO: Remove the entity type and just use integers for parity with Filament's Java bindings.
+export class Entity {
+    public getId(): number;
+    public delete(): void;
+}
+
+export class Skybox {
+    public setColor(color: float4): void;
+    public getTexture(): Texture;
 }
 
 export class LightManager$Instance {
@@ -70,6 +193,7 @@ export class TextureSampler {
 }
 
 export class MaterialInstance {
+    public getName(): string;
     public setBoolParameter(name: string, value: boolean): void;
     public setFloatParameter(name: string, value: number): void;
     public setFloat2Parameter(name: string, value: float2): void;
@@ -82,6 +206,9 @@ export class MaterialInstance {
     public setMaskThreshold(threshold: number): void;
     public setDoubleSided(doubleSided: boolean): void;
     public setCullingMode(mode: CullingMode): void;
+    public setColorWrite(enable: boolean): void;
+    public setDepthWrite(enable: boolean): void;
+    public setDepthCulling(enable: boolean): void;
 }
 
 export class EntityManager {
@@ -92,10 +219,8 @@ export class EntityManager {
 export class VertexBuffer$Builder {
     public vertexCount(count: number): VertexBuffer$Builder;
     public bufferCount(count: number): VertexBuffer$Builder;
-    public attribute(attrib: VertexAttribute,
-                        bufindex: number,
-                        atype: VertexBuffer$AttributeType,
-                        offset: number, stride: number): VertexBuffer$Builder;
+    public attribute(attrib: VertexAttribute, bufindex: number, atype: VertexBuffer$AttributeType,
+            offset: number, stride: number): VertexBuffer$Builder;
     public normalized(attrib: VertexAttribute): VertexBuffer$Builder;
     public normalizedIf(attrib: VertexAttribute, normalized: boolean): VertexBuffer$Builder;
     public build(engine: Engine): VertexBuffer;
@@ -103,15 +228,17 @@ export class VertexBuffer$Builder {
 
 export class IndexBuffer$Builder {
     public indexCount(count: number): IndexBuffer$Builder;
-    public bufferType(IndexBuffer$IndexType): IndexBuffer$Builder;
+    public bufferType(type: IndexBuffer$IndexType): IndexBuffer$Builder;
     public build(engine: Engine): IndexBuffer;
 }
 
 export class RenderableManager$Builder {
-    public geometry(slot: number,
-        ptype: RenderableManager$PrimitiveType,
-        vb: VertexBuffer,
-        ib: IndexBuffer): RenderableManager$Builder;
+    public geometry(slot: number, ptype: RenderableManager$PrimitiveType, vb: VertexBuffer,
+            ib: IndexBuffer): RenderableManager$Builder;
+    public geometryOffset(slot: number, ptype: RenderableManager$PrimitiveType, vb: VertexBuffer,
+            ib: IndexBuffer, offset: number, count: number): RenderableManager$Builder;
+    public geometryMinMax(slot: number, ptype: RenderableManager$PrimitiveType, vb: VertexBuffer,
+            ib: IndexBuffer, offset: number, minIndex: number, maxIndex: number, count: number): RenderableManager$Builder;
     public material(geo: number, minstance: MaterialInstance): RenderableManager$Builder;
     public boundingBox(box: Box): RenderableManager$Builder;
     public layerMask(select: number, values: number): RenderableManager$Builder;
@@ -137,11 +264,25 @@ export class RenderTarget$Builder {
 
 export class LightManager$Builder {
     public build(engine: Engine, entity: Entity): void;
-    public castShadows(value: boolean): LightManager$Builder;
+    public castLight(enable: boolean): LightManager$Builder;
+    public castShadows(enable: boolean): LightManager$Builder;
+    public shadowOptions(options: LightManager$ShadowOptions): LightManager$Builder;
     public color(rgb: float3): LightManager$Builder;
     public direction(value: float3): LightManager$Builder;
     public intensity(value: number): LightManager$Builder;
+    public falloff(value: number): LightManager$Builder;
     public position(value: float3): LightManager$Builder;
+    public spotLightCone(inner: number, outer: number): LightManager$Builder;
+    public sunAngularRadius(angularRadius: number): LightManager$Builder;
+    public sunHaloFalloff(haloFalloff: number): LightManager$Builder;
+    public sunHaloSize(haloSize: number): LightManager$Builder;
+}
+
+export class Skybox$Builder {
+    public build(engine: Engine): Skybox;
+    public color(rgba: float4): Skybox$Builder;
+    public environment(envmap: Texture): Skybox$Builder;
+    public showSun(show: boolean): Skybox$Builder;
 }
 
 export class LightManager {
@@ -162,7 +303,8 @@ export class LightManager {
     public setIntensityEnergy(instance: LightManager$Instance, watts: number, efficiency: number): void;
     public getIntensity(instance: LightManager$Instance): number;
     public setFalloff(instance: LightManager$Instance, radius: number): void;
-    public getFalloff(instance: LightManager$Instance: number);
+    public getFalloff(instance: LightManager$Instance): number;
+    public setShadowOptions(instance: LightManager$Instance, options: LightManager$ShadowOptions): void;
     public setSpotLightCone(instance: LightManager$Instance, inner: number, outer: number): void;
     public setSunAngularRadius(instance: LightManager$Instance, angularRadius: number): void;
     public getSunAngularRadius(instance: LightManager$Instance): number;
@@ -183,7 +325,7 @@ export class RenderableManager {
     public hasComponent(entity: Entity): boolean;
     public getInstance(entity: Entity): RenderableManager$Instance;
     public static Builder(ngeos: number): RenderableManager$Builder;
-    public destroy(entity: Entity);
+    public destroy(entity: Entity): void;
     public setAxisAlignedBoundingBox(instance: RenderableManager$Instance, aabb: Box): void;
     public setLayerMask(instance: RenderableManager$Instance, select: number, values: number): void;
     public setPriority(instance: RenderableManager$Instance, priority: number): void;
@@ -196,7 +338,7 @@ export class RenderableManager {
     public setBonesFromMatrices(instance: RenderableManager$Instance, transforms: mat4[],
             offset: number): void
     public setMorphWeights(instance: RenderableManager$Instance, a: number, b: number, c: number,
-            d: number);
+            d: number): void;
     public getAxisAlignedBoundingBox(instance: RenderableManager$Instance): Box;
     public getPrimitiveCount(instance: RenderableManager$Instance): number;
     public setMaterialInstanceAt(instance: RenderableManager$Instance,
@@ -216,20 +358,26 @@ export class RenderableManager {
 
 export class VertexBuffer {
     public static Builder(): VertexBuffer$Builder;
-    public setBufferAt(engine: Engine, bufindex: number, f32array: any): void;
+    public setBufferAt(engine: Engine, bufindex: number, f32array: BufferReference,
+            byteOffset?: number): void;
 }
 
 export class IndexBuffer {
     public static Builder(): IndexBuffer$Builder;
-    public setBuffer(engine: Engine, u16array: any): void;
+    public setBuffer(engine: Engine, u16array: BufferReference, byteOffset?: number): void;
 }
 
 export class Renderer {
     public render(swapChain: SwapChain, view: View): void;
+    public setClearOptions(options: Renderer$ClearOptions): void;
+    public renderView(view: View): void;
+    public beginFrame(swapChain: SwapChain): boolean;
+    public endFrame(): void;
 }
 
 export class Material {
     public createInstance(): MaterialInstance;
+    public createNamedInstance(name: string): MaterialInstance;
     public getDefaultInstance(): MaterialInstance;
     public getName(): string;
 }
@@ -243,14 +391,16 @@ export class Frustum {
 }
 
 export class Camera {
-    public setProjection(Camera$Projection, left: number, right: number, bottom: number,
-        top: number, near: number, far: number): void;
+    public setProjection(proj: Camera$Projection, left: number, right: number, bottom: number,
+            top: number, near: number, far: number): void;
     public setProjectionFov(fovInDegrees: number, aspect: number,
-        near: number, far: number, fov: Camera$Fov): void;
-    public setLensProjection(focalLength: number, near: number, far: number): void;
+            near: number, far: number, fov: Camera$Fov): void;
+    public setLensProjection(focalLength: number, aspect: number, near: number, far: number): void;
     public setCustomProjection(projection: mat4, near: number, far: number): void;
+    public setScaling(scale: double4): void;
     public getProjectionMatrix(): mat4;
     public getCullingProjectionMatrix(): mat4;
+    public getScaling(): double4;
     public getNear(): number;
     public getCullingFar(): number;
     public setModelMatrix(view: mat4): void;
@@ -270,43 +420,85 @@ export class Camera {
     public static inverseProjection(p: mat4): mat4;
 }
 
+export class ColorGrading$Builder {
+    public quality(qualityLevel: ColorGrading$QualityLevel): ColorGrading$Builder;
+    public toneMapping(toneMapping: ColorGrading$ToneMapping): ColorGrading$Builder;
+    public whiteBalance(temperature: number, tint: number): ColorGrading$Builder;
+    public channelMixer(outRed: float3, outGreen: float3, outBlue: float3): ColorGrading$Builder;
+    public shadowsMidtonesHighlights(shadows: float4, midtones: float4, highlights: float4,
+            ranges: float4): ColorGrading$Builder;
+    public slopeOffsetPower(slope: float3, offset: float3, power: float3): ColorGrading$Builder;
+    public contrast(contrast: number): ColorGrading$Builder;
+    public vibrance(vibrance: number): ColorGrading$Builder;
+    public saturation(saturation: number): ColorGrading$Builder;
+    public curves(shadowGamma: float3, midPoint: float3,
+            highlightScale: float3): ColorGrading$Builder;
+    public build(engine: Engine): ColorGrading;
+}
+
 export class IndirectLight {
-    public setIntensity(intensity: number);
+    public setIntensity(intensity: number): void;
     public getIntensity(): number;
-    public setRotation(value: mat3);
+    public setRotation(value: mat3): void;
     public getRotation(): mat3;
-    public getDirectionEstimate(): float3;
-    public getColorEstimate(direction: float3): float4;
+    public getReflectionsTexture(): Texture;
+    public getIrradianceTexture(): Texture;
+    public static getDirectionEstimate(f32array: any): float3;
+    public static getColorEstimate(f32array: any, direction: float3): float4;
+    shfloats: Array<number>;
+}
+
+export class IndirectLight$Builder {
+    public reflections(cubemap: Texture): IndirectLight$Builder;
+    public irradianceTex(cubemap: Texture): IndirectLight$Builder;
+    public irradianceSh(nbands: number, f32array: any): IndirectLight$Builder;
+    public intensity(value: number): IndirectLight$Builder;
+    public rotation(value: mat3): IndirectLight$Builder;
+    public build(engine: Engine): IndirectLight;
 }
 
 export class IcoSphere {
     constructor(nsubdivs: number);
+    public subdivide(): void;
     vertices: Float32Array;
-    tangents: Uint16Array;
+    tangents: Int16Array;
     triangles: Uint16Array;
 }
 
 export class Scene {
-    public addEntity(entity: Entity);
+    public addEntity(entity: Entity): void;
+    public addEntities(entities: Entity[]): void;
     public getLightCount(): number;
     public getRenderableCount(): number;
-    public remove(entity: Entity);
-    public setIndirectLight(ibl: IndirectLight);
-    public setSkybox(sky: Skybox);
+    public remove(entity: Entity): void;
+    public removeEntities(entities: Entity[]): void;
+    public setIndirectLight(ibl: IndirectLight|null): void;
+    public setSkybox(sky: Skybox|null): void;
 }
 
 export class RenderTarget {
     public getMipLevel(): number;
     public getFace(): Texture$CubemapFace;
     public getLayer(): number;
+    public static Builder() : RenderTarget$Builder;
 }
 
 export class View {
-    public setCamera(camera: Camera);
-    public setClearColor(color: float4);
-    public setScene(scene: Scene);
-    public setViewport(viewport: float4);
-    public setRenderTarget(renderTarget: RenderTarget);
+    public setCamera(camera: Camera): void;
+    public setColorGrading(colorGrading: ColorGrading): void;
+    public setScene(scene: Scene): void;
+    public setViewport(viewport: float4): void;
+    public setVisibleLayers(select: number, values: number): void;
+    public setRenderTarget(renderTarget: RenderTarget): void;
+    public setAmbientOcclusionOptions(options: View$AmbientOcclusionOptions): void;
+    public setDepthOfFieldOptions(options: View$DepthOfFieldOptions): void;
+    public setBloomOptions(options: View$BloomOptions): void;
+    public setFogOptions(options: View$FogOptions): void;
+    public setVignetteOptions(options: View$VignetteOptions): void;
+    public setAmbientOcclusion(ambientOcclusion: View$AmbientOcclusion): void;
+    public getAmbientOcclusion(): View$AmbientOcclusion;
+    public setBlendMode(mode: View$BlendMode): void;
+    public getBlendMode(): View$BlendMode;
 }
 
 export class TransformManager {
@@ -330,22 +522,26 @@ interface Filamesh {
 
 export class Engine {
     public static create(canvas: HTMLCanvasElement, contextOptions?: object): Engine;
-    public createCamera(): Camera;
-    public createIblFromKtx(url: string): IndirectLight;
-    public createMaterial(url: string): Material;
+    public execute(): void;
+    public createCamera(entity: Entity): Camera;
+    public createIblFromKtx(urlOrBuffer: BufferReference): IndirectLight;
+    public createMaterial(urlOrBuffer: BufferReference): Material;
     public createRenderer(): Renderer;
     public createScene(): Scene;
-    public createSkyFromKtx(url: string): Skybox;
+    public createSkyFromKtx(urlOrBuffer: BufferReference): Skybox;
     public createSwapChain(): SwapChain;
-    public createTextureFromJpeg(url: string): Texture;
-    public createTextureFromPng(url: string): Texture;
+    public createTextureFromJpeg(urlOrBuffer: BufferReference, options?: object): Texture;
+    public createTextureFromPng(urlOrBuffer: BufferReference, options?: object): Texture;
+    public createTextureFromKtx(urlOrBuffer: BufferReference, options?: object): Texture;
     public createView(): View;
+
+    public createAssetLoader(): gltfio$AssetLoader;
 
     public destroySwapChain(swapChain: SwapChain): void;
     public destroyRenderer(renderer: Renderer): void;
     public destroyView(view: View): void;
     public destroyScene(scene: Scene): void;
-    public destroyCamera(camera: Camera): void;
+    public destroyCameraComponent(camera: Entity): void;
     public destroyMaterial(material: Material): void;
     public destroyEntity(entity: Entity): void;
     public destroyIndexBuffer(indexBuffer: IndexBuffer): void;
@@ -354,14 +550,77 @@ export class Engine {
     public destroyRenderTarget(renderTarget: RenderTarget): void;
     public destroySkybox(skybox: Skybox): void;
     public destroyTexture(texture: Texture): void;
+    public destroyColorGrading(colorGrading: ColorGrading): void;
 
+    public getCameraComponent(entity: Entity): Camera;
     public getLightManager(): LightManager;
     public destroyVertexBuffer(vertexBuffer: VertexBuffer): void;
     public getRenderableManager(): RenderableManager;
     public getSupportedFormatSuffix(suffix: string): void;
     public getTransformManager(): TransformManager;
     public init(assets: string[], onready: () => void): void;
-    public loadFilamesh(url: string, definstance: MaterialInstance, matinstances: object): Filamesh;
+    public loadFilamesh(urlOrBuffer: BufferReference, definstance: MaterialInstance, matinstances: object): Filamesh;
+}
+
+export class gltfio$AssetLoader {
+    public createAssetFromJson(urlOrBuffer: BufferReference): gltfio$FilamentAsset;
+    public createAssetFromBinary(urlOrBuffer: BufferReference): gltfio$FilamentAsset;
+    public createInstancedAsset(urlOrBuffer: BufferReference,
+            instances: (gltfio$FilamentInstance | null)[]): gltfio$FilamentAsset;
+    public destroyAsset(asset: gltfio$FilamentAsset): void;
+    public delete(): void;
+}
+
+export class gltfio$FilamentAsset {
+    public loadResources(onDone: () => void|null, onFetched: (s: string) => void|null,
+            basePath: string|null, asyncInterval: number|null, options?: object): void;
+    public getEntities(): Entity[];
+    public getEntitiesByName(name: string): Entity[];
+    public getEntityByName(name: string): Entity;
+    public getEntitiesByPrefix(name: string): Entity[];
+    public getLightEntities(): Entity[];
+    public getCameraEntities(): Entity[];
+    public getRoot(): Entity;
+    public popRenderable(): Entity;
+    public getMaterialInstances(): Vector<MaterialInstance>;
+    public getResourceUris(): Vector<string>;
+    public getBoundingBox(): Aabb;
+    public getName(entity: Entity): string;
+    public getAnimator(): gltfio$Animator;
+    public getWireframe(): Entity;
+    public getEngine(): Engine;
+    public releaseSourceData(): void;
+}
+
+export class gltfio$FilamentInstance {
+    public getEntities(): Vector<Entity>;
+    public getRoot(): Entity;
+    public getAnimator(): gltfio$Animator;
+}
+
+export class gltfio$Animator {
+    public applyAnimation(index: number): void;
+    public updateBoneMatrices(): void;
+    public getAnimationCount(): number;
+    public getAnimationDuration(index: number): number;
+    public getAnimationName(index: number): string;
+}
+
+export class SurfaceOrientation$Builder {
+    public constructor();
+    public vertexCount(count: number): SurfaceOrientation$Builder;
+    public normals(vec3array: Float32Array, stride: number): SurfaceOrientation$Builder;
+    public uvs(vec2array: Float32Array, stride: number): SurfaceOrientation$Builder;
+    public positions(vec3array: Float32Array, stride: number): SurfaceOrientation$Builder;
+    public triangleCount(count: number): SurfaceOrientation$Builder;
+    public triangles16(indices: Uint16Array): SurfaceOrientation$Builder;
+    public triangles32(indices: Uint32Array): SurfaceOrientation$Builder;
+    public build(): SurfaceOrientation;
+}
+
+export class SurfaceOrientation {
+    public getQuats(quatCount: number): Int16Array;
+    public delete(): void;
 }
 
 export enum Frustum$Plane {
@@ -381,6 +640,23 @@ export enum Camera$Fov {
 export enum Camera$Projection {
     PERSPECTIVE,
     ORTHO,
+}
+
+ export enum ColorGrading$QualityLevel {
+    LOW,
+    MEDIUM,
+    HIGH,
+    ULTRA,
+ }
+
+export enum ColorGrading$ToneMapping {
+    LINEAR,
+    ACES_LEGACY,
+    ACES,
+    FILMIC,
+    UCHIMURA,
+    REINHARD,
+    DISPLAY_RANGE,
 }
 
 export enum CompressedPixelDataType {
@@ -486,6 +762,8 @@ export enum PixelDataType {
     INT,
     HALF,
     FLOAT,
+    UINT_10F_11F_11F_REV,
+    USHORT_565,
 }
 
 export enum RenderableManager$PrimitiveType {
@@ -613,10 +891,17 @@ export enum Texture$Sampler {
     SAMPLER_EXTERNAL,
 }
 
-export enum Texture$Usage {
+// This enum is a bit different the others because it can be used in a bitfield.
+// It is a "const enum" which means TypeScript will simply create a constant for each member.
+// It does not contain the $ delimiter to avoid interference with the embind class.
+export const enum TextureUsage {
     DEFAULT,
     COLOR_ATTACHMENT,
     DEPTH_ATTACHMENT,
+    STENCIL_ATTACHMENT,
+    UPLOADABLE,
+    SAMPLEABLE,
+    SUBPASS_INPUT,
 }
 
 export enum Texture$CubemapFace {
@@ -694,10 +979,26 @@ export enum View$AntiAliasing {
     FXAA,
 }
 
-export enum View$DepthPrepass {
-    DEFAULT,
-    DISABLED,
-    ENABLED,
+export enum View$BlendMode {
+    OPAQUE,
+    TRANSLUCENT,
+}
+
+export enum View$QualityLevel {
+    LOW,
+    MEDIUM,
+    HIGH,
+    ULTRA,
+}
+
+export enum View$AmbientOcclusion {
+    NONE,
+    SSAO,
+}
+
+export enum View$BloomOptions$BlendMode {
+    ADD,
+    INTERPOLATE,
 }
 
 export enum WrapMode {
@@ -707,7 +1008,7 @@ export enum WrapMode {
 }
 
 export function _malloc(size: number): number;
-export function _free(size: number);
+export function _free(size: number): void;
 
 interface HeapInterface {
     set(buffer: any, pointer: number): any;
@@ -715,9 +1016,3 @@ interface HeapInterface {
 }
 
 export const HEAPU8 : HeapInterface;
-
-export class SurfaceOrientation$Builder {
-    public vertexCount(count: number): SurfaceOrientation$Builder;
-    public normals(count: number, stride: number): SurfaceOrientation$Builder;
-    public build(): any;
-}

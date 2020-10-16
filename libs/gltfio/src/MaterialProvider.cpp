@@ -16,31 +16,45 @@
 
 #include <gltfio/MaterialProvider.h>
 
-using namespace gltfio;
+#include <string>
 
-bool gltfio::operator==(const MaterialKey& k1, const MaterialKey& k2) {
+namespace gltfio {
+
+bool operator==(const MaterialKey& k1, const MaterialKey& k2) {
     return
         (k1.doubleSided == k2.doubleSided) &&
         (k1.unlit == k2.unlit) &&
         (k1.hasVertexColors == k2.hasVertexColors) &&
         (k1.hasBaseColorTexture == k2.hasBaseColorTexture) &&
-        (k1.hasMetallicRoughnessTexture == k2.hasMetallicRoughnessTexture) &&
         (k1.hasNormalTexture == k2.hasNormalTexture) &&
         (k1.hasOcclusionTexture == k2.hasOcclusionTexture) &&
         (k1.hasEmissiveTexture == k2.hasEmissiveTexture) &&
+        (k1.useSpecularGlossiness == k2.useSpecularGlossiness) &&
         (k1.alphaMode == k2.alphaMode) &&
-        (k1.baseColorUV == k2.baseColorUV) &&
+        (k1.hasMetallicRoughnessTexture == k2.hasMetallicRoughnessTexture) &&
         (k1.metallicRoughnessUV == k2.metallicRoughnessUV) &&
+        (k1.baseColorUV == k2.baseColorUV) &&
+        (k1.hasClearCoatTexture == k2.hasClearCoatTexture) &&
+        (k1.clearCoatUV == k2.clearCoatUV) &&
+        (k1.hasClearCoatRoughnessTexture == k2.hasClearCoatRoughnessTexture) &&
+        (k1.clearCoatRoughnessUV == k2.clearCoatRoughnessUV) &&
+        (k1.hasClearCoatNormalTexture == k2.hasClearCoatNormalTexture) &&
+        (k1.clearCoatNormalUV == k2.clearCoatNormalUV) &&
+        (k1.hasClearCoat == k2.hasClearCoat) &&
+        (k1.hasTransmission == k2.hasTransmission) &&
+        (k1.hasTextureTransforms == k2.hasTextureTransforms) &&
         (k1.emissiveUV == k2.emissiveUV) &&
         (k1.aoUV == k2.aoUV) &&
-        (k1.normalUV == k2.normalUV);
+        (k1.normalUV == k2.normalUV) &&
+        (k1.hasTransmissionTexture == k2.hasTransmissionTexture) &&
+        (k1.transmissionUV == k2.transmissionUV);
 }
 
 // Filament supports up to 2 UV sets. glTF has arbitrary texcoord set indices, but it allows
 // implementations to support only 2 simultaneous sets. Here we build a mapping table with 1-based
 // indices where 0 means unused. Note that the order in which we drop textures can affect the look
 // of certain assets. This "order of degradation" is stipulated by the glTF 2.0 specification.
-void details::constrainMaterial(MaterialKey* key, UvMap* uvmap) {
+void constrainMaterial(MaterialKey* key, UvMap* uvmap) {
     const int MAX_INDEX = 2;
     UvMap retval {};
     int index = 1;
@@ -71,11 +85,39 @@ void details::constrainMaterial(MaterialKey* key, UvMap* uvmap) {
             retval[key->emissiveUV] = (UvSet) index++;
         }
     }
+    if (key->hasTransmissionTexture && retval[key->transmissionUV] == UNUSED) {
+        if (index > MAX_INDEX) {
+            key->hasTransmissionTexture = false;
+        } else {
+            retval[key->transmissionUV] = (UvSet) index++;
+        }
+    }
+    if (key->hasClearCoatTexture && retval[key->clearCoatUV] == UNUSED) {
+        if (index > MAX_INDEX) {
+            key->hasClearCoatTexture = false;
+        } else {
+            retval[key->clearCoatUV] = (UvSet) index++;
+        }
+    }
+    if (key->hasClearCoatRoughnessTexture && retval[key->clearCoatRoughnessUV] == UNUSED) {
+        if (index > MAX_INDEX) {
+            key->hasClearCoatRoughnessTexture = false;
+        } else {
+            retval[key->clearCoatRoughnessUV] = (UvSet) index++;
+        }
+    }
+    if (key->hasClearCoatNormalTexture && retval[key->clearCoatNormalUV] == UNUSED) {
+        if (index > MAX_INDEX) {
+            key->hasClearCoatNormalTexture = false;
+        } else {
+            retval[key->clearCoatNormalUV] = (UvSet) index++;
+        }
+    }
+    // NOTE: KHR_materials_clearcoat does not provide separate UVs, we'll assume UV0
     *uvmap = retval;
 }
 
-void details::processShaderString(std::string* shader, const UvMap& uvmap,
-        const MaterialKey& config) {
+void processShaderString(std::string* shader, const UvMap& uvmap, const MaterialKey& config) {
     auto replaceAll = [shader](const std::string& from, const std::string& to) {
         size_t pos = shader->find(from);
         for (; pos != std::string::npos; pos = shader->find(from, pos)) {
@@ -87,10 +129,20 @@ void details::processShaderString(std::string* shader, const UvMap& uvmap,
     const auto& baseColorUV = uvstrings[uvmap[config.baseColorUV]];
     const auto& metallicRoughnessUV = uvstrings[uvmap[config.metallicRoughnessUV]];
     const auto& emissiveUV = uvstrings[uvmap[config.emissiveUV]];
+    const auto& transmissionUV = uvstrings[uvmap[config.transmissionUV]];
     const auto& aoUV = uvstrings[uvmap[config.aoUV]];
+    const auto& clearCoatUV = uvstrings[uvmap[config.clearCoatUV]];
+    const auto& clearCoatRoughnessUV = uvstrings[uvmap[config.clearCoatRoughnessUV]];
+    const auto& clearCoatNormalUV = uvstrings[uvmap[config.clearCoatNormalUV]];
     replaceAll("${normal}", normalUV);
     replaceAll("${color}", baseColorUV);
     replaceAll("${metallic}", metallicRoughnessUV);
     replaceAll("${ao}", aoUV);
     replaceAll("${emissive}", emissiveUV);
+    replaceAll("${transmission}", transmissionUV);
+    replaceAll("${clearCoat}", clearCoatUV);
+    replaceAll("${clearCoatRoughness}", clearCoatRoughnessUV);
+    replaceAll("${clearCoatNormal}", clearCoatNormalUV);
 }
+
+} // namespace gltfio

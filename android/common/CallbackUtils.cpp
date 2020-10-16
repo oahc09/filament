@@ -14,56 +14,44 @@
  * limitations under the License.
  */
 
-#include <functional>
-
 #include "CallbackUtils.h"
 
-struct {
+void acquireCallbackJni(JNIEnv* env, CallbackJni& callbackUtils) {
 #ifdef ANDROID
-    jclass handlerClass;
-    jmethodID post;
+    callbackUtils.handlerClass = env->FindClass("android/os/Handler");
+    callbackUtils.handlerClass = (jclass) env->NewGlobalRef(callbackUtils.handlerClass);
+    callbackUtils.post = env->GetMethodID(callbackUtils.handlerClass,
+            "post", "(Ljava/lang/Runnable;)Z");
 #endif
-    jclass executorClass;
-    jmethodID execute;
-} gCallbackUtils;
 
-JniCallback* JniCallback::make(filament::Engine* engine,
-        JNIEnv* env, jobject handler, jobject callback) {
-    void* that = engine->streamAlloc(sizeof(JniCallback), alignof(JniCallback));
-    return new (that) JniCallback(env, handler, callback);
+    callbackUtils.executorClass = env->FindClass("java/util/concurrent/Executor");
+    callbackUtils.executorClass = (jclass) env->NewGlobalRef(callbackUtils.executorClass);
+    callbackUtils.execute = env->GetMethodID(callbackUtils.executorClass,
+                                              "execute", "(Ljava/lang/Runnable;)V");
 }
 
-JniCallback::JniCallback(JNIEnv* env, jobject handler, jobject callback)
-        : mEnv(env)
-        , mHandler(env->NewGlobalRef(handler))
-        , mCallback(env->NewGlobalRef(callback)) {
-}
-
-JniCallback::~JniCallback() {
-    if (mHandler && mCallback) {
+void releaseCallbackJni(JNIEnv* env, CallbackJni callbackUtils, jobject handler, jobject callback) {
+    if (handler && callback) {
 #ifdef ANDROID
-        if (mEnv->IsInstanceOf(mHandler, gCallbackUtils.handlerClass)) {
-            mEnv->CallBooleanMethod(mHandler, gCallbackUtils.post, mCallback);
+        if (env->IsInstanceOf(handler, callbackUtils.handlerClass)) {
+            env->CallBooleanMethod(handler, callbackUtils.post, callback);
         }
 #endif
-        if (mEnv->IsInstanceOf(mHandler, gCallbackUtils.executorClass)) {
-            mEnv->CallVoidMethod(mHandler, gCallbackUtils.execute, mCallback);
+        if (env->IsInstanceOf(handler, callbackUtils.executorClass)) {
+            env->CallVoidMethod(handler, callbackUtils.execute, callback);
         }
     }
-    mEnv->DeleteGlobalRef(mHandler);
-    mEnv->DeleteGlobalRef(mCallback);
-}
-
-void JniCallback::invoke(void*, size_t, void* user) {
-    JniCallback* data = reinterpret_cast<JniCallback*>(user);
-    // don't call delete here, because we don't own the storage
-    data->~JniCallback();
+    env->DeleteGlobalRef(handler);
+    env->DeleteGlobalRef(callback);
+#ifdef ANDROID
+    env->DeleteGlobalRef(callbackUtils.handlerClass);
+#endif
+    env->DeleteGlobalRef(callbackUtils.executorClass);
 }
 
 JniBufferCallback* JniBufferCallback::make(filament::Engine* engine,
         JNIEnv* env, jobject handler, jobject callback, AutoBuffer&& buffer) {
-    void* that = engine->streamAlloc(sizeof(JniBufferCallback), alignof(JniBufferCallback));
-    return new (that) JniBufferCallback(env, handler, callback, std::move(buffer));
+    return new JniBufferCallback(env, handler, callback, std::move(buffer));
 }
 
 JniBufferCallback::JniBufferCallback(JNIEnv* env, jobject handler, jobject callback,
@@ -71,40 +59,39 @@ JniBufferCallback::JniBufferCallback(JNIEnv* env, jobject handler, jobject callb
         : mEnv(env)
         , mHandler(env->NewGlobalRef(handler))
         , mCallback(env->NewGlobalRef(callback))
-        , mBuffer(std::move(buffer)){
+        , mBuffer(std::move(buffer)) {
+    acquireCallbackJni(env, mCallbackUtils);
 }
 
 JniBufferCallback::~JniBufferCallback() {
-    if (mHandler && mCallback) {
-#ifdef ANDROID
-        if (mEnv->IsInstanceOf(mHandler, gCallbackUtils.handlerClass)) {
-            mEnv->CallBooleanMethod(mHandler, gCallbackUtils.post, mCallback);
-        }
-#endif
-        if (mEnv->IsInstanceOf(mHandler, gCallbackUtils.executorClass)) {
-            mEnv->CallVoidMethod(mHandler, gCallbackUtils.execute, mCallback);
-        }
-    }
-    mEnv->DeleteGlobalRef(mHandler);
-    mEnv->DeleteGlobalRef(mCallback);
+    releaseCallbackJni(mEnv, mCallbackUtils, mHandler, mCallback);
 }
 
 void JniBufferCallback::invoke(void*, size_t, void* user) {
     JniBufferCallback* data = reinterpret_cast<JniBufferCallback*>(user);
-    // don't call delete here, because we don't own the storage
-    data->~JniBufferCallback();
+    delete data;
 }
 
-void registerCallbackUtils(JNIEnv *env) {
-#ifdef ANDROID
-    gCallbackUtils.handlerClass = env->FindClass("android/os/Handler");
-    gCallbackUtils.handlerClass = (jclass) env->NewGlobalRef(gCallbackUtils.handlerClass);
-    gCallbackUtils.post = env->GetMethodID(gCallbackUtils.handlerClass,
-            "post", "(Ljava/lang/Runnable;)Z");
-#endif
+// -----------------------------------------------------------------------------------------------
 
-    gCallbackUtils.executorClass = env->FindClass("java/util/concurrent/Executor");
-    gCallbackUtils.executorClass = (jclass) env->NewGlobalRef(gCallbackUtils.executorClass);
-    gCallbackUtils.execute = env->GetMethodID(gCallbackUtils.executorClass,
-            "execute", "(Ljava/lang/Runnable;)V");
+JniImageCallback* JniImageCallback::make(filament::Engine* engine,
+        JNIEnv* env, jobject handler, jobject callback, long image) {
+    return new JniImageCallback(env, handler, callback, image);
+}
+
+JniImageCallback::JniImageCallback(JNIEnv* env, jobject handler, jobject callback, long image)
+        : mEnv(env)
+        , mHandler(env->NewGlobalRef(handler))
+        , mCallback(env->NewGlobalRef(callback))
+        , mImage(image) {
+    acquireCallbackJni(env, mCallbackUtils);
+}
+
+JniImageCallback::~JniImageCallback() {
+    releaseCallbackJni(mEnv, mCallbackUtils, mHandler, mCallback);
+}
+
+void JniImageCallback::invoke(void*, void* user) {
+    JniImageCallback* data = reinterpret_cast<JniImageCallback*>(user);
+    delete data;
 }

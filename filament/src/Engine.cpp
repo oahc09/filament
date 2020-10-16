@@ -17,6 +17,7 @@
 #include "details/Engine.h"
 
 #include "MaterialParser.h"
+#include "ResourceAllocator.h"
 
 #include "details/DFG.h"
 #include "details/VertexBuffer.h"
@@ -33,9 +34,6 @@
 #include "details/SwapChain.h"
 #include "details/Texture.h"
 #include "details/View.h"
-
-#include "fg/ResourceAllocator.h"
-
 
 #include <private/filament/SibGenerator.h>
 
@@ -58,50 +56,11 @@ namespace filament {
 using namespace backend;
 using namespace filaflat;
 
-namespace details {
-
-// Global list of engines used for diagnostic purposes only.
-// This console output in the constructor helps catch situations where the Filament library is
-// loaded twice, or not at all. Note that we avoid using slog due to static initialization.
-class EngineList {
-public:
-    EngineList() {
-        io::LogStream cinfo(io::LogStream::Priority::INFO);
-        cinfo << "Filament library loaded." << io::endl;
-    }
-    void add(FEngine* instance) {
-        std::unique_ptr<FEngine> engine(instance);
-        std::lock_guard<std::mutex> guard(mLock);
-        Engine* handle = engine.get();
-        mEngines[handle] = std::move(engine);
-    }
-    std::unique_ptr<FEngine> remove(FEngine* instance) {
-        std::unique_ptr<FEngine> filamentEngine;
-        std::lock_guard<std::mutex> guard(mLock);
-        auto const& pos = mEngines.find(instance);
-        if (pos != mEngines.end()) {
-            std::swap(filamentEngine, pos->second);
-            mEngines.erase(pos);
-        }
-        return filamentEngine;
-    }
-    bool isValid(Engine const& engine, const char* function)  {
-        std::lock_guard<std::mutex> guard(mLock);
-        auto const& pos = mEngines.find(&engine);
-        return pos != mEngines.end();
-    }
-private:
-    std::unordered_map<Engine const*, std::unique_ptr<FEngine>> mEngines;
-    std::mutex mLock;
-};
-
-static EngineList sEngines;
-
 FEngine* FEngine::create(Backend backend, Platform* platform, void* sharedGLContext) {
-    FEngine* instance = new FEngine(backend, platform, sharedGLContext);
+    SYSTRACE_ENABLE();
+    SYSTRACE_CALL();
 
-    slog.i << "FEngine (" << sizeof(void*) * 8 << " bits) created at " << instance << " "
-            << "(threading is " << (UTILS_HAS_THREADING ? "enabled)" : "disabled)") << io::endl;
+    FEngine* instance = new FEngine(backend, platform, sharedGLContext);
 
     // initialize all fields that need an instance of FEngine
     // (this cannot be done safely in the ctor)
@@ -109,12 +68,14 @@ FEngine* FEngine::create(Backend backend, Platform* platform, void* sharedGLCont
     // Normally we launch a thread and create the context and Driver from there (see FEngine::loop).
     // In the single-threaded case, we do so in the here and now.
     if (!UTILS_HAS_THREADING) {
-        // we don't own the external context at that point, set it to null
-        instance->mPlatform = nullptr;
         if (platform == nullptr) {
             platform = DefaultPlatform::create(&instance->mBackend);
             instance->mPlatform = platform;
             instance->mOwnPlatform = true;
+        }
+        if (platform == nullptr) {
+            slog.e << "Selected backend not supported in this build." << io::endl;
+            return nullptr;
         }
         instance->mDriver = platform->createDriver(sharedGLContext);
     } else {
@@ -131,8 +92,6 @@ FEngine* FEngine::create(Backend backend, Platform* platform, void* sharedGLCont
         }
     }
 
-    sEngines.add(instance);
-
     // now we can initialize the largest part of the engine
     instance->init();
 
@@ -143,19 +102,58 @@ FEngine* FEngine::create(Backend backend, Platform* platform, void* sharedGLCont
     return instance;
 }
 
-void FEngine::assertValid(Engine const& engine, const char* function) {
-    bool valid = sEngines.isValid(engine, function);
-    ASSERT_POSTCONDITION(valid,
-            "Using an invalid Engine instance (@ %p) from %s.", &engine, function);
+#if UTILS_HAS_THREADING
+
+void FEngine::createAsync(CreateCallback callback, void* user,
+        Backend backend, Platform* platform, void* sharedGLContext) {
+    SYSTRACE_ENABLE();
+    SYSTRACE_CALL();
+    FEngine* instance = new FEngine(backend, platform, sharedGLContext);
+
+    // start the driver thread
+    instance->mDriverThread = std::thread(&FEngine::loop, instance);
+
+    // launch a thread to call the callback -- so it can't do any damage.
+    std::thread callbackThread = std::thread([instance, callback, user]() {
+        instance->mDriverBarrier.await();
+        callback(user, instance);
+    });
+
+    // let the callback thread die on its own
+    callbackThread.detach();
 }
+
+FEngine* FEngine::getEngine(void* token) {
+
+    FEngine* instance = static_cast<FEngine*>(token);
+
+    ASSERT_PRECONDITION(instance->mMainThreadId == std::this_thread::get_id(),
+            "Engine::createAsync() and Engine::getEngine() must be called on the same thread.");
+
+    // we use mResourceAllocator as a proxy for "am I already initialized"
+    if (!instance->mResourceAllocator) {
+        if (UTILS_UNLIKELY(!instance->mDriver)) {
+            // something went horribly wrong during driver initialization
+            instance->mDriverThread.join();
+            return nullptr;
+        }
+
+        // now we can initialize the largest part of the engine
+        instance->init();
+    }
+
+    return instance;
+}
+
+#endif
 
 // these must be static because only a pointer is copied to the render stream
 // Note that these coordinates are specified in OpenGL clip space. Other backends can transform
 // these in the vertex shader as needed.
-static const half4 sFullScreenTriangleVertices[3] = {
-        { -1.0_h, -1.0_h, 1.0_h, 1.0_h },
-        {  3.0_h, -1.0_h, 1.0_h, 1.0_h },
-        { -1.0_h,  3.0_h, 1.0_h, 1.0_h }
+static constexpr float4 sFullScreenTriangleVertices[3] = {
+        { -1.0f, -1.0f, 1.0f, 1.0f },
+        {  3.0f, -1.0f, 1.0f, 1.0f },
+        { -1.0f,  3.0f, 1.0f, 1.0f }
 };
 
 // these must be static because only a pointer is copied to the render stream
@@ -174,13 +172,15 @@ FEngine::FEngine(Backend backend, Platform* platform, void* sharedGLContext) :
         mCommandBufferQueue(CONFIG_MIN_COMMAND_BUFFERS_SIZE, CONFIG_COMMAND_BUFFERS_SIZE),
         mPerRenderPassAllocator("per-renderpass allocator", CONFIG_PER_RENDER_PASS_ARENA_SIZE),
         mEngineEpoch(std::chrono::steady_clock::now()),
-        mDriverBarrier(1)
+        mDriverBarrier(1),
+        mMainThreadId(std::this_thread::get_id())
 {
-    SYSTRACE_ENABLE();
-
     // we're assuming we're on the main thread here.
     // (it may not be the case)
     mJobSystem.adopt();
+
+    slog.i << "FEngine (" << sizeof(void*) * 8 << " bits) created at " << this << " "
+           << "(threading is " << (UTILS_HAS_THREADING ? "enabled)" : "disabled)") << io::endl;
 }
 
 /*
@@ -189,16 +189,18 @@ FEngine::FEngine(Backend backend, Platform* platform, void* sharedGLContext) :
  */
 
 void FEngine::init() {
+    SYSTRACE_CALL();
+
     // this must be first.
     mCommandStream = CommandStream(*mDriver, mCommandBufferQueue.getCircularBuffer());
     DriverApi& driverApi = getDriverApi();
 
-    mResourceAllocator = new fg::ResourceAllocator(driverApi);
+    mResourceAllocator = new ResourceAllocator(driverApi);
 
     mFullScreenTriangleVb = upcast(VertexBuffer::Builder()
             .vertexCount(3)
             .bufferCount(1)
-            .attribute(VertexAttribute::POSITION, 0, VertexBuffer::AttributeType::HALF4, 0)
+            .attribute(VertexAttribute::POSITION, 0, VertexBuffer::AttributeType::FLOAT4, 0)
             .build(*this));
 
     mFullScreenTriangleVb->setBufferAt(*this, 0,
@@ -236,8 +238,9 @@ void FEngine::init() {
     mDefaultIbl = upcast(IndirectLight::Builder()
             .reflections(mDefaultIblTexture)
             .irradiance(3, reinterpret_cast<const float3*>(sh))
-            .intensity(1.0f)
             .build(*this));
+
+    mDefaultColorGrading = upcast(ColorGrading::Builder().build(*this));
 
     // Always initialize the default material, most materials' depth shaders fallback on it.
     mDefaultMaterial = upcast(
@@ -251,6 +254,8 @@ void FEngine::init() {
 }
 
 FEngine::~FEngine() noexcept {
+    SYSTRACE_CALL();
+
     ASSERT_DESTRUCTOR(mTerminated, "Engine destroyed but not terminated!");
     delete mResourceAllocator;
     delete mDriver;
@@ -260,9 +265,14 @@ FEngine::~FEngine() noexcept {
 }
 
 void FEngine::shutdown() {
+    SYSTRACE_CALL();
+
+    ASSERT_PRECONDITION(std::this_thread::get_id() == mMainThreadId,
+            "Engine::shutdown() called from the wrong thread!");
+
 #ifndef NDEBUG
     // print out some statistics about this run
-    size_t wm = mCommandBufferQueue.getHigWatermark();
+    size_t wm = mCommandBufferQueue.getHighWatermark();
     size_t wmpct = wm / (CONFIG_COMMAND_BUFFERS_SIZE / 100);
     slog.d << "CircularBuffer: High watermark "
            << wm / 1024 << " KiB (" << wmpct << "%)" << io::endl;
@@ -288,6 +298,8 @@ void FEngine::shutdown() {
     destroy(mDefaultIblTexture);
     destroy(mDefaultIbl);
 
+    destroy(mDefaultColorGrading);
+
     destroy(mDefaultMaterial);
 
     /*
@@ -301,6 +313,7 @@ void FEngine::shutdown() {
     cleanupResourceList(mViews);
     cleanupResourceList(mScenes);
     cleanupResourceList(mSkyboxes);
+    cleanupResourceList(mColorGradings);
 
     // this must be done after Skyboxes and before materials
     destroy(mSkyboxMaterial);
@@ -355,13 +368,13 @@ void FEngine::prepare() {
     // skipped is the UBO hasn't changed. Still we could have a lot of these.
     FEngine::DriverApi& driver = getDriverApi();
     for (auto& materialInstanceList : mMaterialInstances) {
-        for (auto& item : materialInstanceList.second) {
+        for (const auto& item : materialInstanceList.second) {
             item->commit(driver);
         }
     }
 
     // Commit default material instances.
-    for (auto& material : mMaterials) {
+    for (const auto& material : mMaterials) {
         material->getDefaultInstance()->commit(driver);
     }
 }
@@ -370,7 +383,7 @@ void FEngine::gc() {
     // Note: this runs in a Job
 
     JobSystem& js = mJobSystem;
-    auto parent = js.createJob();
+    auto *parent = js.createJob();
     auto em = std::ref(mEntityManager);
 
     js.run(jobs::createJob(js, parent, &FRenderableManager::gc, &mRenderableManager, em),
@@ -391,12 +404,45 @@ void FEngine::flush() {
 }
 
 void FEngine::flushAndWait() {
+
+#if defined(ANDROID)
+
+    // first make sure we've not terminated filament
+    ASSERT_PRECONDITION(!mCommandBufferQueue.isExitRequested(),
+            "calling Engine::flushAndWait() after Engine::shutdown()!");
+
+#endif
+
     // enqueue finish command -- this will stall in the driver until the GPU is done
     getDriverApi().finish();
 
+#if defined(ANDROID)
+
     // then create a fence that will trigger when we're past the finish() above
+    size_t tryCount = 8;
+    FFence* fence = FEngine::createFence(FFence::Type::SOFT);
+    do {
+        FenceStatus status = fence->wait(FFence::Mode::FLUSH,250000000u);
+        // if the fence didn't trigger after 250ms, check that the command queue thread is still
+        // running (otherwise indicating a precondition violation).
+        if (UTILS_UNLIKELY(status == FenceStatus::TIMEOUT_EXPIRED)) {
+            ASSERT_PRECONDITION(!mCommandBufferQueue.isExitRequested(),
+                    "called Engine::shutdown() WHILE in Engine::flushAndWait()!");
+            tryCount--;
+            ASSERT_POSTCONDITION(tryCount, "flushAndWait() failed inexplicably after 2s");
+            // if the thread is still running, maybe we just need to give it more time
+            continue;
+        }
+        break;
+    } while (true);
+    destroy(fence);
+
+#else
+
     FFence::waitAndDestroy(
             FEngine::createFence(FFence::Type::SOFT), FFence::Mode::FLUSH);
+
+#endif
 
     // finally, execute callbacks that might have been scheduled
     getDriver().purge();
@@ -407,41 +453,24 @@ void FEngine::flushAndWait() {
 // -----------------------------------------------------------------------------------------------
 
 int FEngine::loop() {
-    // we don't own the external context at that point, set it to null
-    Platform* platform = mPlatform;
-    mPlatform = nullptr;
-
-    if (platform == nullptr) {
-        platform = DefaultPlatform::create(&mBackend);
-        mPlatform = platform;
+    if (mPlatform == nullptr) {
+        mPlatform = DefaultPlatform::create(&mBackend);
         mOwnPlatform = true;
-        slog.d << "FEngine resolved backend: ";
-        switch (mBackend) {
-            case backend::Backend::NOOP:
-                slog.d << "Noop";
-                break;
-
-            case backend::Backend::OPENGL:
-                slog.d << "OpenGL";
-                break;
-
-            case backend::Backend::VULKAN:
-                slog.d << "Vulkan";
-                break;
-
-            case backend::Backend::METAL:
-                slog.d << "Metal";
-                break;
-
-            default:
-                slog.d << "Unknown";
-                break;
+        const char* const backend = backendToString(mBackend);
+        slog.d << "FEngine resolved backend: " << backend << io::endl;
+        if (mPlatform == nullptr) {
+            slog.e << "Selected backend not supported in this build." << io::endl;
+            mDriverBarrier.latch();
+            return 0;
         }
-        slog.d << io::endl;
     }
 
 #if FILAMENT_ENABLE_MATDBG
-    const char* portString = getenv("FILAMENT_MATDBG_PORT");
+    #ifdef ANDROID
+        const char* portString = "8081";
+    #else
+        const char* portString = getenv("FILAMENT_MATDBG_PORT");
+    #endif
     if (portString != nullptr) {
         const int port = atoi(portString);
         debug.server = new matdbg::DebugServer(mBackend, port);
@@ -461,7 +490,7 @@ int FEngine::loop() {
     JobSystem::setThreadName("FEngine::loop");
     JobSystem::setThreadPriority(JobSystem::Priority::DISPLAY);
 
-    mDriver = platform->createDriver(mSharedGLContext);
+    mDriver = mPlatform->createDriver(mSharedGLContext);
     mDriverBarrier.latch();
     if (UTILS_UNLIKELY(!mDriver)) {
         // if we get here, it's because the driver couldn't be initialized and the problem has
@@ -541,6 +570,10 @@ FSkybox* FEngine::createSkybox(const Skybox::Builder& builder) noexcept {
     return create(mSkyboxes, builder);
 }
 
+FColorGrading* FEngine::createColorGrading(const ColorGrading::Builder& builder) noexcept {
+    return create(mColorGradings, builder);
+}
+
 FStream* FEngine::createStream(const Stream::Builder& builder) noexcept {
     return create(mStreams, builder);
 }
@@ -562,8 +595,9 @@ FRenderer* FEngine::createRenderer() noexcept {
     return p;
 }
 
-FMaterialInstance* FEngine::createMaterialInstance(const FMaterial* material) noexcept {
-    FMaterialInstance* p = mHeapAllocator.make<FMaterialInstance>(*this, material);
+FMaterialInstance* FEngine::createMaterialInstance(const FMaterial* material,
+        const char* name) noexcept {
+    FMaterialInstance* p = mHeapAllocator.make<FMaterialInstance>(*this, material, name);
     if (p) {
         auto pos = mMaterialInstances.emplace(material, "MaterialInstance");
         pos.first->second.insert(p);
@@ -669,99 +703,99 @@ void FEngine::cleanupResourceList(ResourceList<T, L>& list) {
 // -----------------------------------------------------------------------------------------------
 
 template<typename T, typename L>
-void FEngine::terminateAndDestroy(const T* ptr, ResourceList<T, L>& list) {
-    if (ptr != nullptr) {
-        if (list.remove(ptr)) {
-            const_cast<T*>(ptr)->terminate(*this);
-            mHeapAllocator.destroy(const_cast<T*>(ptr));
-        } else {
-            // object not found, do nothing and log an error on DEBUG builds.
-#ifndef NDEBUG
-            slog.d << "object "
-                   << CallStack::typeName<T>().c_str()
-                   << " at " << ptr << " doesn't exist!"
-                   << io::endl;
-#endif
-        }
+bool FEngine::terminateAndDestroy(const T* ptr, ResourceList<T, L>& list) {
+    if (ptr == nullptr) return true;
+    bool success = list.remove(ptr);
+    if (ASSERT_PRECONDITION_NON_FATAL(success,
+            "Object %s at %p doesn't exist (double free?)",
+            CallStack::typeName<T>().c_str(), ptr)) {
+        const_cast<T*>(ptr)->terminate(*this);
+        mHeapAllocator.destroy(const_cast<T*>(ptr));
     }
+    return success;
 }
 
 // -----------------------------------------------------------------------------------------------
 
-void FEngine::destroy(const FVertexBuffer* p) {
-    terminateAndDestroy(p, mVertexBuffers);
+bool FEngine::destroy(const FVertexBuffer* p) {
+    return terminateAndDestroy(p, mVertexBuffers);
 }
 
-void FEngine::destroy(const FIndexBuffer* p) {
-    terminateAndDestroy(p, mIndexBuffers);
+bool FEngine::destroy(const FIndexBuffer* p) {
+    return terminateAndDestroy(p, mIndexBuffers);
 }
 
-inline void FEngine::destroy(const FRenderer* p) {
-    terminateAndDestroy(p, mRenderers);
+inline bool FEngine::destroy(const FRenderer* p) {
+    return terminateAndDestroy(p, mRenderers);
 }
 
-inline void FEngine::destroy(const FScene* p) {
-    terminateAndDestroy(p, mScenes);
+inline bool FEngine::destroy(const FScene* p) {
+    return terminateAndDestroy(p, mScenes);
 }
 
-inline void FEngine::destroy(const FSkybox* p) {
-    terminateAndDestroy(p, mSkyboxes);
+inline bool FEngine::destroy(const FSkybox* p) {
+    return terminateAndDestroy(p, mSkyboxes);
 }
 
-UTILS_NOINLINE
-void FEngine::destroy(const FTexture* p) {
-    terminateAndDestroy(p, mTextures);
-}
-
-void FEngine::destroy(const FRenderTarget* p) {
-    terminateAndDestroy(p, mRenderTargets);
-}
-
-inline void FEngine::destroy(const FView* p) {
-    terminateAndDestroy(p, mViews);
-}
-
-inline void FEngine::destroy(const FIndirectLight* p) {
-    terminateAndDestroy(p, mIndirectLights);
+inline bool FEngine::destroy(const FColorGrading* p) {
+    return terminateAndDestroy(p, mColorGradings);
 }
 
 UTILS_NOINLINE
-void FEngine::destroy(const FFence* p) {
-    terminateAndDestroy(p, mFences);
+bool FEngine::destroy(const FTexture* p) {
+    return terminateAndDestroy(p, mTextures);
 }
 
-void FEngine::destroy(const FSwapChain* p) {
-    terminateAndDestroy(p, mSwapChains);
+bool FEngine::destroy(const FRenderTarget* p) {
+    return terminateAndDestroy(p, mRenderTargets);
 }
 
-void FEngine::destroy(const FStream* p) {
-    terminateAndDestroy(p, mStreams);
+inline bool FEngine::destroy(const FView* p) {
+    return terminateAndDestroy(p, mViews);
+}
+
+inline bool FEngine::destroy(const FIndirectLight* p) {
+    return terminateAndDestroy(p, mIndirectLights);
+}
+
+UTILS_NOINLINE
+bool FEngine::destroy(const FFence* p) {
+    return terminateAndDestroy(p, mFences);
+}
+
+bool FEngine::destroy(const FSwapChain* p) {
+    return terminateAndDestroy(p, mSwapChains);
+}
+
+bool FEngine::destroy(const FStream* p) {
+    return terminateAndDestroy(p, mStreams);
 }
 
 
-void FEngine::destroy(const FMaterial* ptr) {
-    if (ptr != nullptr) {
-        auto pos = mMaterialInstances.find(ptr);
-        if (pos != mMaterialInstances.cend()) {
-            // ensure we've destroyed all instances before destroying the material
-            if (!ASSERT_PRECONDITION_NON_FATAL(pos->second.empty(),
-                    "destroying material \"%s\" but %u instances still alive",
-                    ptr->getName().c_str(), (*pos).second.size())) {
-                return;
-            }
+bool FEngine::destroy(const FMaterial* ptr) {
+    if (ptr == nullptr) return true;
+    auto pos = mMaterialInstances.find(ptr);
+    if (pos != mMaterialInstances.cend()) {
+        // ensure we've destroyed all instances before destroying the material
+        if (!ASSERT_PRECONDITION_NON_FATAL(pos->second.empty(),
+                "destroying material \"%s\" but %u instances still alive",
+                ptr->getName().c_str(), (*pos).second.size())) {
+            return false;
         }
-        terminateAndDestroy(ptr, mMaterials);
     }
+    return terminateAndDestroy(ptr, mMaterials);
 }
 
-void FEngine::destroy(const FMaterialInstance* ptr) {
-    if (ptr != nullptr) {
-        auto pos = mMaterialInstances.find(ptr->getMaterial());
-        assert(pos != mMaterialInstances.cend());
-        if (pos != mMaterialInstances.cend()) {
-            terminateAndDestroy(ptr, pos->second);
-        }
+bool FEngine::destroy(const FMaterialInstance* ptr) {
+    if (ptr == nullptr) return true;
+    auto pos = mMaterialInstances.find(ptr->getMaterial());
+    assert(pos != mMaterialInstances.cend());
+    if (pos != mMaterialInstances.cend()) {
+        return terminateAndDestroy(ptr, pos->second);
     }
+    // if we don't find this instance's material it might be because it's the default instance
+    // in which case it fine to ignore.
+    return true;
 }
 
 void FEngine::destroy(Entity e) {
@@ -800,20 +834,14 @@ bool FEngine::execute() {
 
 void FEngine::destroy(FEngine* engine) {
     if (engine) {
-        std::unique_ptr<FEngine> filamentEngine = sEngines.remove(engine);
-        if (filamentEngine) {
-            filamentEngine->shutdown();
-        }
+        engine->shutdown();
+        delete engine;
     }
 }
-
-} // namespace details
 
 // ------------------------------------------------------------------------------------------------
 // Trampoline calling into private implementation
 // ------------------------------------------------------------------------------------------------
-
-using namespace details;
 
 Engine* Engine::create(Backend backend, Platform* platform, void* sharedGLContext) {
     return FEngine::create(backend, platform, sharedGLContext);
@@ -822,6 +850,17 @@ Engine* Engine::create(Backend backend, Platform* platform, void* sharedGLContex
 void Engine::destroy(Engine* engine) {
     FEngine::destroy(upcast(engine));
 }
+
+#if UTILS_HAS_THREADING
+void Engine::createAsync(Engine::CreateCallback callback, void* user, Backend backend,
+        Platform* platform, void* sharedGLContext) {
+    FEngine::createAsync(callback, user, backend, platform, sharedGLContext);
+}
+
+Engine* Engine::getEngine(void* token) {
+    return FEngine::getEngine(token);
+}
+#endif
 
 void Engine::destroy(Engine** pEngine) {
     if (pEngine) {
@@ -879,60 +918,64 @@ SwapChain* Engine::createSwapChain(uint32_t width, uint32_t height, uint64_t fla
     return upcast(this)->createSwapChain(width, height, flags);
 }
 
-void Engine::destroy(const VertexBuffer* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const VertexBuffer* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const IndexBuffer* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const IndexBuffer* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const IndirectLight* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const IndirectLight* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const Material* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const Material* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const MaterialInstance* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const MaterialInstance* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const Renderer* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const Renderer* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const View* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const View* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const Scene* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const Scene* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const Skybox* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const Skybox* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const Stream* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const ColorGrading* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const Texture* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const Stream* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const RenderTarget* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const Texture* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const Fence* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const RenderTarget* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
-void Engine::destroy(const SwapChain* p) {
-    upcast(this)->destroy(upcast(p));
+bool Engine::destroy(const Fence* p) {
+    return upcast(this)->destroy(upcast(p));
+}
+
+bool Engine::destroy(const SwapChain* p) {
+    return upcast(this)->destroy(upcast(p));
 }
 
 void Engine::destroy(Entity e) {
@@ -967,9 +1010,22 @@ void Engine::execute() {
     upcast(this)->execute();
 }
 
+utils::JobSystem& Engine::getJobSystem() noexcept {
+    return upcast(this)->getJobSystem();
+}
+
 DebugRegistry& Engine::getDebugRegistry() noexcept {
     return upcast(this)->getDebugRegistry();
 }
 
+Camera* Engine::createCamera() noexcept {
+    return createCamera(upcast(this)->getEntityManager().create());
+}
+
+void Engine::destroy(const Camera* camera) {
+    Entity e = camera->getEntity();
+    destroyCameraComponent(e);
+    upcast(this)->getEntityManager().destroy(e);
+}
 
 } // namespace filament

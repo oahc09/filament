@@ -25,17 +25,19 @@
 namespace filament {
 namespace backend {
 
-struct HwVertexBuffer;
 struct HwFence;
 struct HwIndexBuffer;
 struct HwProgram;
 struct HwRenderPrimitive;
 struct HwRenderTarget;
 struct HwSamplerGroup;
-struct HwTexture;
-struct HwUniformBuffer;
-struct HwSwapChain;
 struct HwStream;
+struct HwSwapChain;
+struct HwSync;
+struct HwTexture;
+struct HwTimerQuery;
+struct HwUniformBuffer;
+struct HwVertexBuffer;
 
 /*
  * A type handle to a h/w resource
@@ -48,33 +50,26 @@ public:
     using HandleId = uint32_t;
     static constexpr const HandleId nullid = HandleId{ std::numeric_limits<HandleId>::max() };
 
-    enum class no_init { };
-    static constexpr no_init NO_INIT = { };
-
-    constexpr HandleBase() noexcept : object(nullid) { }
-
-    explicit HandleBase(no_init) noexcept { } // NOLINT
+    constexpr HandleBase() noexcept: object(nullid) {}
 
     explicit HandleBase(HandleId id) noexcept : object(id) {
         assert(object != nullid); // usually means an uninitialized handle is used
     }
 
     HandleBase(HandleBase const& rhs) noexcept = default;
-
-    HandleBase& operator = (HandleBase const& rhs) noexcept = default;
-
     HandleBase(HandleBase&& rhs) noexcept : object(rhs.object) {
         rhs.object = nullid;
     }
 
-    HandleBase& operator = (HandleBase&& rhs) noexcept {
+    HandleBase& operator=(HandleBase const& rhs) noexcept = default;
+    HandleBase& operator=(HandleBase&& rhs) noexcept {
         std::swap(object, rhs.object);
         return *this;
     }
 
-    void clear() noexcept { object = nullid; }
-
     explicit operator bool() const noexcept { return object != nullid; }
+
+    void clear() noexcept { object = nullid; }
 
     bool operator==(const HandleBase& rhs) const noexcept { return object == rhs.object; }
     bool operator!=(const HandleBase& rhs) const noexcept { return object != rhs.object; }
@@ -89,6 +84,9 @@ protected:
 template <typename T>
 struct Handle : public HandleBase {
     using HandleBase::HandleBase;
+
+    template<typename B, typename = std::enable_if_t<std::is_base_of<T, B>::value> >
+    Handle(Handle<B> const& base) noexcept : HandleBase(base) { } // NOLINT(hicpp-explicit-conversions)
 
 private:
 #if !defined(NDEBUG)
@@ -107,7 +105,9 @@ using RenderTargetHandle    = Handle<HwRenderTarget>;
 using SamplerGroupHandle    = Handle<HwSamplerGroup>;
 using StreamHandle          = Handle<HwStream>;
 using SwapChainHandle       = Handle<HwSwapChain>;
+using SyncHandle            = Handle<HwSync>;
 using TextureHandle         = Handle<HwTexture>;
+using TimerQueryHandle      = Handle<HwTimerQuery>;
 using UniformBufferHandle   = Handle<HwUniformBuffer>;
 using VertexBufferHandle    = Handle<HwVertexBuffer>;
 

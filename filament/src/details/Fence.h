@@ -29,10 +29,6 @@
 
 namespace filament {
 
-struct HwFence;
-
-namespace details {
-
 class FEngine;
 
 class FFence : public Fence {
@@ -76,7 +72,6 @@ private:
 
 FILAMENT_UPCAST(Fence)
 
-} // namespace details
 } // namespace filament
 
 #endif // TNT_FILAMENT_DETAILS_FENCE_H

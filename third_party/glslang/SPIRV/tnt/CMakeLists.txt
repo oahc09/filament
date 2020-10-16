@@ -43,8 +43,11 @@ endif(ENABLE_NV_EXTENSIONS)
 
 add_library(SPIRV STATIC ${SOURCES} ${HEADERS})
 target_include_directories(SPIRV PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_include_directories(SPIRV PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set_property(TARGET SPIRV PROPERTY FOLDER glslang)
 set_property(TARGET SPIRV PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+glslang_add_build_info_dependency(SPIRV)
 
 add_library(SPVRemapper STATIC ${SPVREMAP_SOURCES} ${SPVREMAP_HEADERS})
 set_property(TARGET SPVRemapper PROPERTY FOLDER glslang)

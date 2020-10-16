@@ -21,10 +21,20 @@
 #include <stdint.h>
 
 #include <utils/Entity.h>
+#include <utils/compiler.h>
+
+#ifndef FILAMENT_UTILS_TRACK_ENTITIES
+#define FILAMENT_UTILS_TRACK_ENTITIES false
+#endif
+
+#if FILAMENT_UTILS_TRACK_ENTITIES
+#include <utils/ostream.h>
+#include <vector>
+#endif
 
 namespace utils {
 
-class EntityManager {
+class UTILS_PUBLIC EntityManager {
 public:
     // Get the global EntityManager. Is is recommended to cache this value.
     // Thread Safe.
@@ -33,9 +43,8 @@ public:
     class Listener {
     public:
         virtual void onEntitiesDestroyed(size_t n, Entity const* entities) noexcept = 0;
-        virtual void onAllEntitiesDestroyed() noexcept = 0;
     protected:
-        ~Listener() noexcept = default;
+        ~Listener() noexcept;
     };
 
 
@@ -88,6 +97,11 @@ public:
     // singleton, can't be copied
     EntityManager(const EntityManager& rhs) = delete;
     EntityManager& operator=(const EntityManager& rhs) = delete;
+
+#if FILAMENT_UTILS_TRACK_ENTITIES
+    std::vector<Entity> getActiveEntities() const;
+    void dumpActiveEntities(utils::io::ostream& out) const;
+#endif
 
 private:
     friend class EntityManagerImpl;

@@ -3,11 +3,7 @@
 //------------------------------------------------------------------------------
 
 // Number of spherical harmonics bands (1, 2 or 3)
-#if defined(TARGET_MOBILE)
-#define SPHERICAL_HARMONICS_BANDS           2
-#else
 #define SPHERICAL_HARMONICS_BANDS           3
-#endif
 
 // IBL integration algorithm
 #define IBL_INTEGRATION_PREFILTERED_CUBEMAP         0
@@ -65,28 +61,57 @@ vec3 Irradiance_SphericalHarmonics(const vec3 n) {
         , 0.0);
 }
 
+vec3 Irradiance_RoughnessOne(const vec3 n) {
+    // note: lod used is always integer, hopefully the hardware skips tri-linear filtering
+    return decodeDataForIBL(textureLod(light_iblSpecular, n, frameUniforms.iblRoughnessOneLevel));
+}
+
 //------------------------------------------------------------------------------
 // IBL irradiance dispatch
 //------------------------------------------------------------------------------
 
 vec3 diffuseIrradiance(const vec3 n) {
-    return Irradiance_SphericalHarmonics(n);
+    if (frameUniforms.iblSH[0].x == 65504.0) {
+#if defined(TARGET_MOBILE)
+        return Irradiance_RoughnessOne(n);
+#else
+        ivec2 s = textureSize(light_iblSpecular, int(frameUniforms.iblRoughnessOneLevel));
+        float du = 1.0 / float(s.x);
+        float dv = 1.0 / float(s.y);
+        vec3 m0 = normalize(cross(n, vec3(0.0, 1.0, 0.0)));
+        vec3 m1 = cross(m0, n);
+        vec3 m0du = m0 * du;
+        vec3 m1dv = m1 * dv;
+        vec3 c;
+        c  = Irradiance_RoughnessOne(n - m0du - m1dv);
+        c += Irradiance_RoughnessOne(n + m0du - m1dv);
+        c += Irradiance_RoughnessOne(n + m0du + m1dv);
+        c += Irradiance_RoughnessOne(n - m0du + m1dv);
+        return c * 0.25;
+#endif
+    } else {
+        return Irradiance_SphericalHarmonics(n);
+    }
 }
 
 //------------------------------------------------------------------------------
 // IBL specular
 //------------------------------------------------------------------------------
 
+float perceptualRoughnessToLod(float perceptualRoughness) {
+    // The mapping below is a quadratic fit for log2(perceptualRoughness)+iblRoughnessOneLevel when
+    // iblRoughnessOneLevel is 4. We found empirically that this mapping works very well for
+    // a 256 cubemap with 5 levels used. But also scales well for other iblRoughnessOneLevel values.
+    return frameUniforms.iblRoughnessOneLevel * perceptualRoughness * (2.0 - perceptualRoughness);
+}
+
 vec3 prefilteredRadiance(const vec3 r, float perceptualRoughness) {
-    // lod = lod_count * sqrt(roughness), which is the mapping used by cmgen
-    // where roughness = perceptualRoughness^2
-    // using all the mip levels requires seamless cubemap sampling
-    float lod = frameUniforms.iblMaxMipLevel.x * perceptualRoughness;
+    float lod = perceptualRoughnessToLod(perceptualRoughness);
     return decodeDataForIBL(textureLod(light_iblSpecular, r, lod));
 }
 
 vec3 prefilteredRadiance(const vec3 r, float roughness, float offset) {
-    float lod = frameUniforms.iblMaxMipLevel.x * roughness;
+    float lod = frameUniforms.iblRoughnessOneLevel * roughness;
     return decodeDataForIBL(textureLod(light_iblSpecular, r, lod + offset));
 }
 
@@ -194,17 +219,17 @@ vec3 importanceSamplingVNdfDggx(vec2 u, float roughness, vec3 v) {
     return h;
 }
 
-float prefilteredImportanceSampling(float ipdf, vec2 iblMaxMipLevel) {
+float prefilteredImportanceSampling(float ipdf, float iblRoughnessOneLevel) {
     // See: "Real-time Shading with Filtered Importance Sampling", Jaroslav Krivanek
     // Prefiltering doesn't work with anisotropy
     const float numSamples = float(IBL_INTEGRATION_IMPORTANCE_SAMPLING_COUNT);
     const float invNumSamples = 1.0 / float(numSamples);
-    const float dim = iblMaxMipLevel.y;
+    const float dim = float(textureSize(light_iblSpecular, 0).x);
     const float omegaP = (4.0 * PI) / (6.0 * dim * dim);
     const float invOmegaP = 1.0 / omegaP;
     const float K = 4.0;
     float omegaS = invNumSamples * ipdf;
-    float mipLevel = clamp(log2(K * omegaS * invOmegaP) * 0.5, 0.0, iblMaxMipLevel.x);
+    float mipLevel = clamp(log2(K * omegaS * invOmegaP) * 0.5, 0.0, iblRoughnessOneLevel);
     return mipLevel;
 }
 
@@ -220,7 +245,7 @@ vec3 isEvaluateIBL(const PixelParams pixel, vec3 n, vec3 v, float NoV) {
     float roughness = pixel.roughness;
     float a2 = roughness * roughness;
 
-    vec2 iblMaxMipLevel = frameUniforms.iblMaxMipLevel;
+    float iblRoughnessOneLevel = frameUniforms.iblRoughnessOneLevel;
     const uint numSamples = uint(IBL_INTEGRATION_IMPORTANCE_SAMPLING_COUNT);
     const float invNumSamples = 1.0 / float(numSamples);
 
@@ -242,7 +267,7 @@ vec3 isEvaluateIBL(const PixelParams pixel, vec3 n, vec3 v, float NoV) {
             // PDF inverse (we must use D_GGX() here, which is used to generate samples)
             float ipdf = (4.0 * LoH) / (D_GGX(roughness, NoH, h) * NoH);
 
-            float mipLevel = prefilteredImportanceSampling(ipdf, iblMaxMipLevel);
+            float mipLevel = prefilteredImportanceSampling(ipdf, iblRoughnessOneLevel);
 
             // we use texture() instead of textureLod() to take advantage of mipmapping
             vec3 L = decodeDataForIBL(texture(light_iblSpecular, l, mipLevel));
@@ -336,10 +361,139 @@ void evaluateSubsurfaceIBL(const PixelParams pixel, const vec3 diffuseIrradiance
 #endif
 }
 
-void evaluateIBL(const MaterialInputs material, const PixelParams pixel, inout vec3 color) {
-    // Apply transform here if we wanted to rotate the IBL
-    vec3 n = shading_normal;
+#if defined(HAS_REFRACTION)
 
+struct Refraction {
+    vec3 position;
+    vec3 direction;
+    float d;
+};
+
+void refractionSolidSphere(const PixelParams pixel,
+    const vec3 n, vec3 r, out Refraction ray) {
+    r = refract(r, n, pixel.etaIR);
+    float NoR = dot(n, r);
+    float d = pixel.thickness * -NoR;
+    ray.position = vec3(shading_position + r * d);
+    ray.d = d;
+    vec3 n1 = normalize(NoR * r - n * 0.5);
+    ray.direction = refract(r, n1,  pixel.etaRI);
+}
+
+void refractionSolidBox(const PixelParams pixel,
+    const vec3 n, vec3 r, out Refraction ray) {
+    vec3 rr = refract(r, n, pixel.etaIR);
+    float NoR = dot(n, rr);
+    float d = pixel.thickness / max(-NoR, 0.001);
+    ray.position = vec3(shading_position + rr * d);
+    ray.direction = r;
+    ray.d = d;
+#if REFRACTION_MODE == REFRACTION_MODE_CUBEMAP
+    // fudge direction vector, so we see the offset due to the thickness of the object
+    float envDistance = 10.0; // this should come from a ubo
+    ray.direction = normalize((ray.position - shading_position) + ray.direction * envDistance);
+#endif
+}
+
+void refractionThinSphere(const PixelParams pixel,
+    const vec3 n, vec3 r, out Refraction ray) {
+    float d = 0.0;
+#if defined(MATERIAL_HAS_MICRO_THICKNESS)
+    // note: we need the refracted ray to calculate the distance traveled
+    // we could use shading_NoV, but we would lose the dependency on ior.
+    vec3 rr = refract(r, n, pixel.etaIR);
+    float NoR = dot(n, rr);
+    d = pixel.uThickness / max(-NoR, 0.001);
+    ray.position = vec3(shading_position + rr * d);
+#else
+    ray.position = vec3(shading_position);
+#endif
+    ray.direction = r;
+    ray.d = d;
+}
+
+void applyRefraction(const PixelParams pixel,
+    const vec3 n0, vec3 E, vec3 Fd, vec3 Fr,
+    inout vec3 color) {
+
+    Refraction ray;
+
+#if REFRACTION_TYPE == REFRACTION_TYPE_SOLID
+    refractionSolidSphere(pixel, n0, -shading_view, ray);
+#elif REFRACTION_TYPE == REFRACTION_TYPE_THIN
+    refractionThinSphere(pixel, n0, -shading_view, ray);
+#else
+#error invalid REFRACTION_TYPE
+#endif
+
+    /* compute transmission T */
+#if defined(MATERIAL_HAS_ABSORPTION)
+#if defined(MATERIAL_HAS_THICKNESS) || defined(MATERIAL_HAS_MICRO_THICKNESS)
+    vec3 T = min(vec3(1.0), exp(-pixel.absorption * ray.d));
+#else
+    vec3 T = 1.0 - pixel.absorption;
+#endif
+#endif
+
+    float perceptualRoughness = pixel.perceptualRoughnessUnclamped;
+#if REFRACTION_TYPE == REFRACTION_TYPE_THIN
+    // Roughness remaping for thin layers, see Burley 2012, "Physically-Based Shading at Disney"
+    perceptualRoughness = saturate((0.65 * pixel.etaRI - 0.35) * perceptualRoughness);
+
+    // For thin surfaces, the light will bounce off at the second interface in the direction of
+    // the reflection, effectively adding to the specular, but this process will repeat itself.
+    // Each time the ray exits the surface on the front side after the first bounce,
+    // it's multiplied by E^2, and we get: E + E(1-E)^2 + E^3(1-E)^2 + ...
+    // This infinite series converges and is easy to simplify.
+    // Note: we calculate these bounces only on a single component,
+    // since it's a fairly subtle effect.
+    E *= 1.0 + pixel.transmission * (1.0 - E.g) / (1.0 + E.g);
+#endif
+
+    /* sample the cubemap or screen-space */
+#if REFRACTION_MODE == REFRACTION_MODE_CUBEMAP
+    // when reading from the cubemap, we are not pre-exposed so we apply iblLuminance
+    // which is not the case when we'll read from the screen-space buffer
+    vec3 Ft = prefilteredRadiance(ray.direction, perceptualRoughness) * frameUniforms.iblLuminance;
+#else
+    // compute the point where the ray exits the medium, if needed
+    vec4 p = vec4(frameUniforms.clipFromWorldMatrix * vec4(ray.position, 1.0));
+    p.xy = uvToRenderTargetUV(p.xy * (0.5 / p.w) + 0.5);
+
+    // perceptualRoughness to LOD
+    // Empirical factor to compensate for the gaussian approximation of Dggx, chosen so
+    // cubemap and screen-space modes match at perceptualRoughness 0.125
+    float tweakedPerceptualRoughness = perceptualRoughness * 1.74;
+    float lod = max(0.0, 2.0 * log2(tweakedPerceptualRoughness) + frameUniforms.refractionLodOffset);
+
+    vec3 Ft = textureLod(light_ssr, p.xy, lod).rgb;
+#endif
+
+    /* fresnel from the first interface */
+    Ft *= 1.0 - E;
+
+    /* apply absorption */
+#if defined(MATERIAL_HAS_ABSORPTION)
+    Ft *= T;
+#endif
+
+    Fr *= frameUniforms.iblLuminance;
+    Fd *= frameUniforms.iblLuminance;
+    color.rgb += Fr + mix(Fd, Ft, pixel.transmission);
+}
+#endif
+
+void combineDiffuseAndSpecular(const PixelParams pixel,
+        const vec3 n, const vec3 E, const vec3 Fd, const vec3 Fr,
+        inout vec3 color) {
+#if defined(HAS_REFRACTION)
+    applyRefraction(pixel, n, E, Fd, Fr, color);
+#else
+    color.rgb += (Fd + Fr) * frameUniforms.iblLuminance;
+#endif
+}
+
+void evaluateIBL(const MaterialInputs material, const PixelParams pixel, inout vec3 color) {
     float ssao = evaluateSSAO();
     float diffuseAO = min(material.ambientOcclusion, ssao);
     float specularAO = computeSpecularAO(shading_NoV, diffuseAO, pixel.roughness);
@@ -348,7 +502,7 @@ void evaluateIBL(const MaterialInputs material, const PixelParams pixel, inout v
     vec3 Fr;
 #if IBL_INTEGRATION == IBL_INTEGRATION_PREFILTERED_CUBEMAP
     vec3 E = specularDFG(pixel);
-    vec3 r = getReflectedVector(pixel, n);
+    vec3 r = getReflectedVector(pixel, shading_normal);
     Fr = E * prefilteredRadiance(r, pixel.perceptualRoughness);
 #elif IBL_INTEGRATION == IBL_INTEGRATION_IMPORTANCE_SAMPLING
     vec3 E = vec3(0.0); // TODO: fix for importance sampling
@@ -360,7 +514,13 @@ void evaluateIBL(const MaterialInputs material, const PixelParams pixel, inout v
     float diffuseBRDF = singleBounceAO(diffuseAO); // Fd_Lambert() is baked in the SH below
     evaluateClothIndirectDiffuseBRDF(pixel, diffuseBRDF);
 
-    vec3 diffuseIrradiance = diffuseIrradiance(n);
+#if defined(MATERIAL_HAS_BENT_NORMAL)
+    vec3 diffuseNormal = shading_bentNormal;
+#else
+    vec3 diffuseNormal = shading_normal;
+#endif
+
+    vec3 diffuseIrradiance = diffuseIrradiance(diffuseNormal);
     vec3 Fd = pixel.diffuseColor * diffuseIrradiance * (1.0 - E) * diffuseBRDF;
 
     // clear coat layer
@@ -374,5 +534,5 @@ void evaluateIBL(const MaterialInputs material, const PixelParams pixel, inout v
     multiBounceSpecularAO(specularAO, pixel.f0, Fr);
 
     // Note: iblLuminance is already premultiplied by the exposure
-    color.rgb += (Fd + Fr) * frameUniforms.iblLuminance;
+    combineDiffuseAndSpecular(pixel, shading_normal, E, Fd, Fr, color);
 }

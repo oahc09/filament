@@ -28,6 +28,8 @@
 
 #include <spirv-tools/optimizer.hpp>
 
+#include <memory>
+
 namespace filamat {
 
 using SpirvBlob = std::vector<uint32_t>;
@@ -44,19 +46,38 @@ public:
 
     ~GLSLPostProcessor();
 
-    bool process(const std::string& inputShader, filament::backend::ShaderType shaderType,
-            filament::backend::ShaderModel shaderModel, std::string* outputGlsl,
-            SpirvBlob* outputSpirv, std::string* outputMsl);
+    struct Config {
+        filament::backend::ShaderType shaderType;
+        filament::backend::ShaderModel shaderModel;
+        struct {
+            std::vector<std::pair<uint32_t, uint32_t>> subpassInputToColorLocation;
+        } glsl;
+    };
+
+    bool process(const std::string& inputShader, Config const& config,
+            std::string* outputGlsl,
+            SpirvBlob* outputSpirv,
+            std::string* outputMsl);
 
 private:
 
     void fullOptimization(const glslang::TShader& tShader,
-            filament::backend::ShaderModel shaderModel) const;
+            GLSLPostProcessor::Config const& config) const;
     void preprocessOptimization(glslang::TShader& tShader,
-            filament::backend::ShaderModel shaderModel) const;
+            GLSLPostProcessor::Config const& config) const;
 
-    void registerSizePasses(spvtools::Optimizer& optimizer) const;
-    void registerPerformancePasses(spvtools::Optimizer& optimizer) const;
+    /**
+     * Retrieve an optimizer instance tuned for the given optimization level and shader configuration.
+     */
+    using OptimizerPtr = std::shared_ptr<spvtools::Optimizer>;
+    static OptimizerPtr createOptimizer(
+            MaterialBuilder::Optimization optimization,
+            Config const& config);
+
+    static void registerSizePasses(spvtools::Optimizer& optimizer, Config const& config);
+    static void registerPerformancePasses(spvtools::Optimizer& optimizer, Config const& config);
+
+    void optimizeSpirv(OptimizerPtr optimizer, SpirvBlob& spirv) const;
 
     const MaterialBuilder::Optimization mOptimization;
     const bool mPrintShaders;

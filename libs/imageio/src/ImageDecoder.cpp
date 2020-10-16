@@ -20,7 +20,7 @@
 
 #include <cstdint>
 #include <cstring> // for memcmp
-#include <istream>
+#include <iostream> // for cerr
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -244,8 +244,14 @@ LinearImage PNGDecoder::decode() {
         if (colorType == PNG_COLOR_TYPE_PALETTE) {
             png_set_palette_to_rgb(mPNG);
         }
-        if (colorType == PNG_COLOR_TYPE_GRAY) {
+        if (colorType == PNG_COLOR_TYPE_GRAY || colorType == PNG_COLOR_TYPE_GRAY_ALPHA) {
+            if (bitDepth < 8) {
+                png_set_expand_gray_1_2_4_to_8(mPNG);
+            }
             png_set_gray_to_rgb(mPNG);
+        }
+        if (png_get_valid(mPNG, mInfo, PNG_INFO_tRNS)) {
+            png_set_tRNS_to_alpha(mPNG);
         }
         if (getColorSpace() == ImageDecoder::ColorSpace::SRGB) {
             png_set_alpha_mode(mPNG, PNG_ALPHA_PNG, PNG_DEFAULT_sRGB);
@@ -257,6 +263,10 @@ LinearImage PNGDecoder::decode() {
         }
 
         png_read_update_info(mPNG, mInfo);
+
+        // Read updated color type since we may have asked for a conversion before
+        colorType = png_get_color_type(mPNG, mInfo);
+
         uint32_t width  = png_get_image_width(mPNG, mInfo);
         uint32_t height = png_get_image_height(mPNG, mInfo);
         size_t rowBytes = png_get_rowbytes(mPNG, mInfo);
@@ -272,23 +282,23 @@ LinearImage PNGDecoder::decode() {
         if (colorType == PNG_COLOR_TYPE_RGBA) {
             if (getColorSpace() == ImageDecoder::ColorSpace::SRGB) {
                 return toLinearWithAlpha<uint16_t>(width, height, rowBytes, imageData,
-                        [ ](uint16_t v) -> uint16_t { return ntohs(v); },
-                        sRGBToLinear< filament::math::float4>);
+                        [](uint16_t v) -> uint16_t { return ntohs(v); },
+                        sRGBToLinear<filament::math::float4>);
             } else {
                 return toLinearWithAlpha<uint16_t>(width, height, rowBytes, imageData,
-                        [ ](uint16_t v) -> uint16_t { return ntohs(v); },
-                        [ ](const filament::math::float4& color) ->  filament::math::float4 { return color; });
+                        [](uint16_t v) -> uint16_t { return ntohs(v); },
+                        [](const filament::math::float4& color) ->  filament::math::float4 { return color; });
             }
         } else {
             // Convert to linear float (PNG 16 stores data in network order (big endian).
             if (getColorSpace() == ImageDecoder::ColorSpace::SRGB) {
                 return toLinear<uint16_t>(width, height, rowBytes, imageData,
-                        [ ](uint16_t v) -> uint16_t { return ntohs(v); },
+                        [](uint16_t v) -> uint16_t { return ntohs(v); },
                         sRGBToLinear< filament::math::float3>);
             } else {
                 return toLinear<uint16_t>(width, height, rowBytes, imageData,
-                        [ ](uint16_t v) -> uint16_t { return ntohs(v); },
-                        [ ](const filament::math::float3& color) ->  filament::math::float3 { return color; });
+                        [](uint16_t v) -> uint16_t { return ntohs(v); },
+                        [](const filament::math::float3& color) ->  filament::math::float3 { return color; });
             }
         }
     } catch(std::runtime_error& e) {
@@ -370,28 +380,38 @@ LinearImage HDRDecoder::decode() {
         if (sx == '-') image = horizontalFlip(image);
         if (sy == '+') image = verticalFlip(image);
 
-        uint16_t w;
-        uint16_t magic;
+        // Allocate memory to hold one row of decoded pixel data.
         std::unique_ptr<uint8_t[]> rgbe(new uint8_t[width * 4]);
 
-        if (width < 8 || width > 32767) {
+        // First, test for non-RLE images.
+        const auto pos = mStream.tellg();
+        mStream.read((char*) rgbe.get(), 3);
+        mStream.seekg(pos);
+
+        if (rgbe[0] != 0x2 || rgbe[1] != 0x2 || (rgbe[2] & 0x80) || width < 8 || width > 32767) {
             for (uint32_t y = 0; y < height; y++) {
-                 filament::math::float3* i = reinterpret_cast< filament::math::float3*>(image.getPixelRef(0, y));
-                mStream.read((char*) &rgbe, width * 4);
+                filament::math::float3* dst = reinterpret_cast<filament::math::float3*>(image.getPixelRef(0, y));
+                mStream.read((char*) rgbe.get(), width * 4);
                 // (rgb/256) * 2^(e-128)
                 size_t pixel = 0;
                 for (size_t x = 0; x < width; x++, pixel += 4) {
-                     filament::math::float3 v(rgbe[pixel], rgbe[pixel + 1], rgbe[pixel + 2]);
-                    i[x] = v * std::ldexp(1.0f, rgbe[pixel + 3] - (128 + 8));
+                    if (rgbe[pixel + 3] == 0.0f) {
+                        dst[x] = filament::math::float3{0.0f};
+                    } else {
+                        filament::math::float3 v(rgbe[pixel], rgbe[pixel + 1], rgbe[pixel + 2]);
+                        dst[x] = (v + 0.5f) * std::ldexp(1.0f, rgbe[pixel + 3] - (128 + 8));
+                    }
                 }
             }
         } else {
             for (uint32_t y = 0; y < height; y++) {
-                //std::cout << "line: " << y << std::endl;
+                uint16_t magic;
                 mStream.read((char*) &magic, 2);
                 if (magic != 0x0202) {
                     throw std::runtime_error("invalid scanline (magic)");
                 }
+
+                uint16_t w;
                 mStream.read((char*) &w, 2);
                 if (ntohs(w) != width) {
                     throw std::runtime_error("invalid scanline (width)");
@@ -424,11 +444,15 @@ LinearImage HDRDecoder::decode() {
                 uint8_t const* g = &rgbe[width];
                 uint8_t const* b = &rgbe[2 * width];
                 uint8_t const* e = &rgbe[3 * width];
-                 filament::math::float3* i = reinterpret_cast< filament::math::float3*>(image.getPixelRef(0, y));
+                filament::math::float3* dst = reinterpret_cast<filament::math::float3*>(image.getPixelRef(0, y));
                 // (rgb/256) * 2^(e-128)
                 for (size_t x = 0; x < width; x++, r++, g++, b++, e++) {
-                     filament::math::float3 v(r[0], g[0], b[0]);
-                    i[x] = v * std::ldexp(1.0f, e[0] - (128 + 8));
+                    if (e[0] == 0.0f) {
+                        dst[x] = filament::math::float3{0.0f};
+                    } else {
+                        filament::math::float3 v(r[0], g[0], b[0]);
+                        dst[x] = (v + 0.5f) * std::ldexp(1.0f, e[0] - (128 + 8));
+                    }
                 }
             }
         }

@@ -10,6 +10,7 @@ set(GENERATION_ROOT ${CMAKE_CURRENT_BINARY_DIR})
 # ==================================================================================================
 set(PUBLIC_HDRS
         include/backend/BufferDescriptor.h
+        include/backend/DriverEnums.h
         include/backend/Handle.h
         include/backend/PipelineState.h
         include/backend/PixelBufferDescriptor.h
@@ -34,6 +35,7 @@ set(SRCS
 )
 
 set(PRIVATE_HDRS
+        include/private/backend/AcquiredImage.h
         include/private/backend/CircularBuffer.h
         include/private/backend/CommandBufferQueue.h
         include/private/backend/CommandStream.h
@@ -53,7 +55,7 @@ set(PRIVATE_HDRS
 # OpenGL / OpenGL ES Sources
 # ==================================================================================================
 
-if (NOT USE_EXTERNAL_GLES3)
+if (NOT FILAMENT_USE_EXTERNAL_GLES3 AND NOT FILAMENT_USE_SWIFTSHADER)
     list(APPEND SRCS
             src/opengl/gl_headers.cpp
             src/opengl/gl_headers.h
@@ -69,13 +71,18 @@ if (NOT USE_EXTERNAL_GLES3)
             src/opengl/OpenGLProgram.cpp
             src/opengl/OpenGLProgram.h
             src/opengl/OpenGLPlatform.cpp
+            src/opengl/TimerQuery.cpp
+            src/opengl/TimerQuery.h
             include/private/backend/OpenGLPlatform.h
     )
+    if (EGL)
+        list(APPEND SRCS src/opengl/PlatformEGL.cpp)
+    endif()
     if (ANDROID)
         list(APPEND SRCS src/android/ExternalStreamManagerAndroid.cpp)
         list(APPEND SRCS src/android/ExternalTextureManagerAndroid.cpp)
         list(APPEND SRCS src/android/VirtualMachineEnv.cpp)
-        list(APPEND SRCS src/opengl/PlatformEGL.cpp)
+        list(APPEND SRCS src/opengl/PlatformEGLAndroid.cpp)
     elseif (IOS)
         list(APPEND SRCS src/opengl/PlatformCocoaTouchGL.mm)
         list(APPEND SRCS src/opengl/CocoaTouchExternalImage.mm)
@@ -99,6 +106,7 @@ endif()
 if (FILAMENT_SUPPORTS_METAL)
     list(APPEND SRCS
             src/metal/MetalBlitter.mm
+            src/metal/MetalBuffer.mm
             src/metal/MetalBufferPool.mm
             src/metal/MetalContext.mm
             src/metal/MetalDriver.mm
@@ -106,6 +114,7 @@ if (FILAMENT_SUPPORTS_METAL)
             src/metal/MetalHandles.mm
             src/metal/MetalResourceTracker.cpp
             src/metal/MetalState.mm
+            src/metal/MetalTimerQuery.mm
             src/metal/PlatformMetal.mm
     )
 endif()
@@ -175,11 +184,22 @@ add_library(${TARGET} STATIC ${PRIVATE_HDRS} ${PUBLIC_HDRS} ${SRCS})
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
 
 # ==================================================================================================
+# Expose a header-only target to minimize dependencies.
+# ==================================================================================================
+
+add_library(${TARGET}_headers INTERFACE)
+target_include_directories(${TARGET}_headers INTERFACE ${PUBLIC_HDR_DIR})
+
+# ==================================================================================================
 # Dependencies
 # ==================================================================================================
 
 if (ANDROID)
     target_link_libraries(${TARGET} PUBLIC GLESv3 EGL android)
+endif()
+
+if (FILAMENT_USE_SWIFTSHADER)
+    target_link_libraries(${TARGET} PUBLIC ${SWIFTSHADER_VK})
 endif()
 
 if (APPLE AND NOT IOS)
@@ -199,7 +219,7 @@ if (FILAMENT_SUPPORTS_VULKAN)
 endif()
 
 if (FILAMENT_SUPPORTS_METAL)
-    target_link_libraries(${TARGET} PUBLIC "-framework Metal")
+    target_link_libraries(${TARGET} PUBLIC "-framework Metal -framework CoreVideo")
 endif()
 
 if (LINUX)
@@ -209,7 +229,7 @@ endif()
 # ==================================================================================================
 # Compiler flags
 # ==================================================================================================
-if (MSVC OR CLANG_CL)
+if (MSVC)
     set(OPTIMIZATION_FLAGS
         /fp:fast
     )
@@ -232,20 +252,16 @@ set(LINUX_LINKER_OPTIMIZATION_FLAGS
         -Wl,--exclude-libs,bluegl
 )
 
-set(LINUX_COMPILER_FLAGS
-        -fPIC
-)
-
-if (NOT MSVC_NATIVE)
+if (MSVC)
+    set(FILAMENT_WARNINGS /W3)
+else()
     set(FILAMENT_WARNINGS
-            -Wextra -Wno-unused-parameter
+            -Wall -Wextra -Wno-unused-parameter
             -Wextra-semi -Wnewline-eof -Wdeprecated -Wundef
             -Wgnu-conditional-omitted-operand
             -Wweak-vtables -Wnon-virtual-dtor -Wclass-varargs -Wimplicit-fallthrough
             -Wover-aligned
     )
-else()
-    set(FILAMENT_WARNINGS /W0)
 endif()
 
 if (APPLE)
@@ -253,19 +269,10 @@ if (APPLE)
     target_compile_options(${TARGET} PRIVATE "-fobjc-arc")
 endif()
 
-# clang-cl maps -Wall to -Weverything, which clutters logs with benign -Wc++98-compat warnings
-# Use /W4 instead for clang-cl builds
-if (CLANG_CL)
-    set(FILAMENT_WARNINGS /W4 ${FILAMENT_WARNINGS})
-else()
-    set(FILAMENT_WARNINGS -Wall ${FILAMENT_WARNINGS})
-endif()
-
 target_compile_options(${TARGET} PRIVATE
         ${FILAMENT_WARNINGS}
         $<$<CONFIG:Release>:${OPTIMIZATION_FLAGS}>
         $<$<AND:$<PLATFORM_ID:Darwin>,$<CONFIG:Release>>:${DARWIN_OPTIMIZATION_FLAGS}>
-        $<$<PLATFORM_ID:Linux>:${LINUX_COMPILER_FLAGS}>
 )
 
 target_link_libraries(${TARGET} PRIVATE
@@ -290,7 +297,10 @@ if (APPLE)
         test/ShaderGenerator.cpp
         test/TrianglePrimitive.cpp
         test/Arguments.cpp
-        test/test_MissingRequiredAttributes.cpp)
+        test/test_MissingRequiredAttributes.cpp
+        test/test_ReadPixels.cpp
+        test/test_BufferUpdates.cpp
+        test/test_MRT.cpp)
 
     target_link_libraries(backend_test PRIVATE
         backend
@@ -327,7 +337,7 @@ if (APPLE)
     endif()
 endif()
 
-if (APPLE AND NOT IOS)
+if (APPLE AND NOT IOS AND NOT FILAMENT_USE_SWIFTSHADER)
     add_executable(backend_test_mac test/mac_runner.mm)
     target_link_libraries(backend_test_mac PRIVATE "-framework Metal -framework AppKit -framework QuartzCore")
     # Because each test case is a separate file, the -force_load flag is necessary to prevent the
@@ -335,7 +345,7 @@ if (APPLE AND NOT IOS)
     target_link_libraries(backend_test_mac PRIVATE -force_load backend_test)
 endif()
 
-if (APPLE AND NOT Vulkan_LIBRARY)
+if (APPLE AND NOT Vulkan_LIBRARY AND NOT FILAMENT_USE_SWIFTSHADER)
     message(STATUS "No Vulkan SDK was found, using prebuilt MoltenVK.")
     set(MOLTENVK_DIR "../../third_party/moltenvk")
     configure_file(

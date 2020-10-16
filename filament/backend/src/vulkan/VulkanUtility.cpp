@@ -140,7 +140,7 @@ VkFormat getVkFormat(TextureFormat format) {
         case TextureFormat::RGBA8:             return VK_FORMAT_R8G8B8A8_UNORM;
         case TextureFormat::SRGB8_A8:          return VK_FORMAT_R8G8B8A8_SRGB;
         case TextureFormat::RGBA8_SNORM:       return VK_FORMAT_R8G8B8A8_SNORM;
-        case TextureFormat::RGB10_A2:          return VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+        case TextureFormat::RGB10_A2:          return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
         case TextureFormat::RGBA8UI:           return VK_FORMAT_R8G8B8A8_UINT;
         case TextureFormat::RGBA8I:            return VK_FORMAT_R8G8B8A8_SINT;
         case TextureFormat::DEPTH32F:          return VK_FORMAT_D32_SFLOAT;
@@ -173,9 +173,13 @@ VkFormat getVkFormat(TextureFormat format) {
 
         // Compressed textures.
         case TextureFormat::DXT1_RGB:          return VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+        case TextureFormat::DXT1_SRGB:         return VK_FORMAT_BC1_RGB_SRGB_BLOCK;
         case TextureFormat::DXT1_RGBA:         return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        case TextureFormat::DXT1_SRGBA:        return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
         case TextureFormat::DXT3_RGBA:         return VK_FORMAT_BC2_UNORM_BLOCK;
+        case TextureFormat::DXT3_SRGBA:        return VK_FORMAT_BC2_SRGB_BLOCK;
         case TextureFormat::DXT5_RGBA:         return VK_FORMAT_BC3_UNORM_BLOCK;
+        case TextureFormat::DXT5_SRGBA:        return VK_FORMAT_BC3_SRGB_BLOCK;
 
         case TextureFormat::RGBA_ASTC_4x4:     return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
         case TextureFormat::RGBA_ASTC_5x4:     return VK_FORMAT_ASTC_5x4_UNORM_BLOCK;

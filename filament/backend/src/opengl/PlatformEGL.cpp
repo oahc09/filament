@@ -17,13 +17,8 @@
 #include "PlatformEGL.h"
 
 #include "OpenGLDriver.h"
-
-#include <jni.h>
-
-#include <assert.h>
-
-#include <string>
-#include <unordered_set>
+#include "OpenGLContext.h"
+#include "OpenGLDriverFactory.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -31,22 +26,8 @@
 #include <utils/compiler.h>
 #include <utils/Log.h>
 
-#include "android/ExternalTextureManagerAndroid.h"
-#include "android/ExternalStreamManagerAndroid.h"
-#include "android/VirtualMachineEnv.h"
+#include <assert.h>
 
-#include "OpenGLContext.h"
-#include "OpenGLDriverFactory.h"
-
-#include <android/api-level.h>
-#include <sys/system_properties.h>
-
-// We require filament to be built with a API 19 toolchain, before that, OpenGLES 3.0 didn't exist
-// Actually, OpenGL ES 3.0 was added to API 18, but API 19 is the better target and
-// the minimum for Jetpack at the time of this comment.
-#if __ANDROID_API__ < 19
-#   error "__ANDROID_API__ must be at least 19"
-#endif
 
 using namespace utils;
 
@@ -58,25 +39,17 @@ namespace glext {
 UTILS_PRIVATE PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR = {};
 UTILS_PRIVATE PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR = {};
 UTILS_PRIVATE PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR = {};
-UTILS_PRIVATE PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC eglGetNativeClientBufferANDROID = {};
 UTILS_PRIVATE PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR = {};
 UTILS_PRIVATE PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR = {};
-UTILS_PRIVATE PFNEGLPRESENTATIONTIMEANDROIDPROC eglPresentationTimeANDROID = {};
-UTILS_PRIVATE PFNEGLGETCOMPOSITORTIMINGSUPPORTEDANDROIDPROC eglGetCompositorTimingSupportedANDROID = {};
-UTILS_PRIVATE PFNEGLGETCOMPOSITORTIMINGANDROIDPROC eglGetCompositorTimingANDROID = {};
-UTILS_PRIVATE PFNEGLGETNEXTFRAMEIDANDROIDPROC eglGetNextFrameIdANDROID = {};
-UTILS_PRIVATE PFNEGLGETFRAMETIMESTAMPSUPPORTEDANDROIDPROC eglGetFrameTimestampSupportedANDROID = {};
-UTILS_PRIVATE PFNEGLGETFRAMETIMESTAMPSANDROIDPROC eglGetFrameTimestampsANDROID = {};
 }
 using namespace glext;
 
-using EGLStream = Platform::Stream;
 
 // ---------------------------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------------------------
 
-static void logEglError(const char* name) noexcept {
+void PlatformEGL::logEglError(const char* name) noexcept {
     const char* err;
     switch (eglGetError()) {
         case EGL_NOT_INITIALIZED:       err = "EGL_NOT_INITIALIZED";    break;
@@ -106,46 +79,11 @@ static void clearGlError() noexcept {
     }
 }
 
-class unordered_string_set : public std::unordered_set<std::string> {
-public:
-    bool has(const char* str) {
-        return find(std::string(str)) != end();
-    }
-};
-
-static unordered_string_set split(const char* spacedList) {
-    unordered_string_set set;
-    const char* current = spacedList;
-    const char* head = current;
-    do {
-        head = strchr(current, ' ');
-        std::string s(current, head ? head - current : strlen(current));
-        if (s.length()) {
-            set.insert(std::move(s));
-        }
-        current = head + 1;
-    } while (head);
-    return set;
-}
-
 // ---------------------------------------------------------------------------------------------
 
-PlatformEGL::PlatformEGL() noexcept
-        : mExternalStreamManager(ExternalStreamManagerAndroid::get()),
-          mExternalTextureManager(ExternalTextureManagerAndroid::get()) {
-}
+PlatformEGL::PlatformEGL() noexcept = default;
 
 Driver* PlatformEGL::createDriver(void* sharedContext) noexcept {
-    char scratch[PROP_VALUE_MAX + 1];
-    int length = __system_property_get("ro.build.version.release", scratch);
-    int androidVersion = length >= 0 ? atoi(scratch) : 1;
-    if (!androidVersion) {
-        mOSVersion = 1000; // if androidVersion is 0, it means "future"
-    } else {
-        length = __system_property_get("ro.build.version.sdk", scratch);
-        mOSVersion = length >= 0 ? atoi(scratch) : 1;
-    }
-
     mEGLDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     assert(mEGLDisplay != EGL_NO_DISPLAY);
 
@@ -158,7 +96,7 @@ Driver* PlatformEGL::createDriver(void* sharedContext) noexcept {
 
     importGLESExtensionsEntryPoints();
 
-    auto extensions = split(eglQueryString(mEGLDisplay, EGL_EXTENSIONS));
+    auto extensions = GLUtils::split(eglQueryString(mEGLDisplay, EGL_EXTENSIONS));
 
     eglCreateSyncKHR = (PFNEGLCREATESYNCKHRPROC) eglGetProcAddress("eglCreateSyncKHR");
     eglDestroySyncKHR = (PFNEGLDESTROYSYNCKHRPROC) eglGetProcAddress("eglDestroySyncKHR");
@@ -167,35 +105,16 @@ Driver* PlatformEGL::createDriver(void* sharedContext) noexcept {
     eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC) eglGetProcAddress("eglCreateImageKHR");
     eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC) eglGetProcAddress("eglDestroyImageKHR");
 
-    eglGetNativeClientBufferANDROID = (PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC) eglGetProcAddress("eglGetNativeClientBufferANDROID");
-
-    if (extensions.has("EGL_ANDROID_presentation_time")) {
-        eglPresentationTimeANDROID = (PFNEGLPRESENTATIONTIMEANDROIDPROC)eglGetProcAddress(
-                "eglPresentationTimeANDROID");
-    }
-
-    if (extensions.has("EGL_ANDROID_get_frame_timestamps")) {
-        eglGetCompositorTimingSupportedANDROID = (PFNEGLGETCOMPOSITORTIMINGSUPPORTEDANDROIDPROC)eglGetProcAddress(
-                "eglGetCompositorTimingSupportedANDROID");
-        eglGetCompositorTimingANDROID = (PFNEGLGETCOMPOSITORTIMINGANDROIDPROC)eglGetProcAddress(
-                "eglGetCompositorTimingANDROID");
-        eglGetNextFrameIdANDROID = (PFNEGLGETNEXTFRAMEIDANDROIDPROC)eglGetProcAddress(
-                "eglGetNextFrameIdANDROID");
-        eglGetFrameTimestampSupportedANDROID = (PFNEGLGETFRAMETIMESTAMPSUPPORTEDANDROIDPROC)eglGetProcAddress(
-                "eglGetFrameTimestampSupportedANDROID");
-        eglGetFrameTimestampsANDROID = (PFNEGLGETFRAMETIMESTAMPSANDROIDPROC)eglGetProcAddress(
-                "eglGetFrameTimestampsANDROID");
-    }
-
     EGLint configsCount;
     EGLint configAttribs[] = {
-            EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT_KHR,
-            EGL_RED_SIZE,    8,
-            EGL_GREEN_SIZE,  8,
-            EGL_BLUE_SIZE,   8,
-            EGL_ALPHA_SIZE,  0, // reserved to set ALPHA_SIZE below
-            EGL_RECORDABLE_ANDROID, 1,
-            EGL_NONE
+            EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT_KHR,        //  0
+            EGL_RED_SIZE,    8,                                 //  2
+            EGL_GREEN_SIZE,  8,                                 //  4
+            EGL_BLUE_SIZE,   8,                                 //  6
+            EGL_ALPHA_SIZE,  0,                                 //  8 : reserved to set ALPHA_SIZE below
+            EGL_DEPTH_SIZE, 24,                                 // 10
+            EGL_RECORDABLE_ANDROID, 1,                          // 12
+            EGL_NONE                                            // 14
     };
 
     EGLint contextAttribs[] = {
@@ -230,8 +149,8 @@ Driver* PlatformEGL::createDriver(void* sharedContext) noexcept {
     if (configsCount == 0) {
       // warn and retry without EGL_RECORDABLE_ANDROID
       logEglError("eglChooseConfig(..., EGL_RECORDABLE_ANDROID) failed. Continuing without it.");
-      configAttribs[10] = EGL_RECORDABLE_ANDROID;
-      configAttribs[11] = EGL_DONT_CARE;
+      configAttribs[12] = EGL_RECORDABLE_ANDROID;
+      configAttribs[13] = EGL_DONT_CARE;
       if (!eglChooseConfig(mEGLDisplay, configAttribs, &mEGLConfig, 1, &configsCount) ||
               configsCount == 0) {
           logEglError("eglChooseConfig");
@@ -243,7 +162,7 @@ Driver* PlatformEGL::createDriver(void* sharedContext) noexcept {
     configAttribs[8] = EGL_ALPHA_SIZE;
     configAttribs[9] = 8;
     if (!eglChooseConfig(mEGLDisplay, configAttribs, &mEGLTransparentConfig, 1, &configsCount) ||
-            (configAttribs[11] == EGL_DONT_CARE && configsCount == 0)) {
+            (configAttribs[13] == EGL_DONT_CARE && configsCount == 0)) {
         logEglError("eglChooseConfig");
         goto error;
     }
@@ -252,8 +171,8 @@ Driver* PlatformEGL::createDriver(void* sharedContext) noexcept {
       // warn and retry without EGL_RECORDABLE_ANDROID
         logEglError("eglChooseConfig(..., EGL_RECORDABLE_ANDROID) failed. Continuing without it.");
       // this is not fatal
-      configAttribs[10] = EGL_RECORDABLE_ANDROID;
-      configAttribs[11] = EGL_DONT_CARE;
+      configAttribs[12] = EGL_RECORDABLE_ANDROID;
+      configAttribs[13] = EGL_DONT_CARE;
       if (!eglChooseConfig(mEGLDisplay, configAttribs, &mEGLTransparentConfig, 1, &configsCount) ||
               configsCount == 0) {
           logEglError("eglChooseConfig");
@@ -355,11 +274,6 @@ Platform::SwapChain* PlatformEGL::createSwapChain(
         logEglError("eglSurfaceAttrib(..., EGL_SWAP_BEHAVIOR, EGL_BUFFER_DESTROYED)");
         // this is not fatal
     }
-    // activate this for recording frame timestamps
-    //if (!eglSurfaceAttrib(mEGLDisplay, sur, EGL_TIMESTAMPS_ANDROID, EGL_TRUE)) {
-    //    logEglError("eglSurfaceAttrib(..., EGL_TIMESTAMPS_ANDROID, EGL_TRUE)");
-    //    // this is not fatal
-    //}
     return (SwapChain*)sur;
 }
 
@@ -397,17 +311,6 @@ void PlatformEGL::makeCurrent(Platform::SwapChain* drawSwapChain,
     EGLSurface readSur = (EGLSurface) readSwapChain;
     if (drawSur != EGL_NO_SURFACE || readSur != EGL_NO_SURFACE) {
         makeCurrent(drawSur, readSur);
-    }
-}
-
-void PlatformEGL::setPresentationTime(int64_t presentationTimeInNanosecond) noexcept {
-    if (mCurrentDrawSurface != EGL_NO_SURFACE) {
-        if (eglPresentationTimeANDROID) {
-            eglPresentationTimeANDROID(
-                    mEGLDisplay,
-                    mCurrentDrawSurface,
-                    presentationTimeInNanosecond);
-        }
     }
 }
 
@@ -452,88 +355,18 @@ backend::FenceStatus PlatformEGL::waitFence(
     return FenceStatus::ERROR;
 }
 
-Platform::Stream* PlatformEGL::createStream(void* nativeStream) noexcept {
-    return mExternalStreamManager.acquire(static_cast<jobject>(nativeStream));
-}
-
-void PlatformEGL::destroyStream(Platform::Stream* stream) noexcept {
-    mExternalStreamManager.release(stream);
-}
-
-void PlatformEGL::attach(Stream* stream, intptr_t tname) noexcept {
-    mExternalStreamManager.attach(stream, tname);
-}
-
-void PlatformEGL::detach(Stream* stream) noexcept {
-    mExternalStreamManager.detach(stream);
-}
-
-void PlatformEGL::updateTexImage(Stream* stream, int64_t* timestamp) noexcept {
-    mExternalStreamManager.updateTexImage(stream, timestamp);
-}
-
-Platform::ExternalTexture* PlatformEGL::createExternalTextureStorage() noexcept {
-    return mExternalTextureManager.create();
-}
-
-void PlatformEGL::reallocateExternalStorage(
-        Platform::ExternalTexture* externalTexture,
-        uint32_t w, uint32_t h, backend::TextureFormat format) noexcept {
-    if (externalTexture) {
-        if ((EGLImageKHR)externalTexture->image != EGL_NO_IMAGE_KHR) {
-            eglDestroyImageKHR(mEGLDisplay, (EGLImageKHR)externalTexture->image);
-            externalTexture->image = (uintptr_t)EGL_NO_IMAGE_KHR;
-        }
-
-        mExternalTextureManager.reallocate(externalTexture, w, h, format,
-                AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE);
-
-        auto ets = (ExternalTextureManagerAndroid::ExternalTexture*)externalTexture;
-        EGLClientBuffer clientBuffer;
-        if (ets->hardwareBuffer) {
-            clientBuffer = eglGetNativeClientBufferANDROID(ets->hardwareBuffer);
-            if (UTILS_UNLIKELY(!clientBuffer)) {
-                logEglError("eglGetNativeClientBufferANDROID");
-                return;
-            }
-        } else if (ets->clientBuffer) {
-            clientBuffer = (EGLClientBuffer)ets->clientBuffer;
-        } else {
-            // woops, reallocate failed.
-            return;
-        }
-
-        const EGLint attr[] = { EGL_NONE };
-        EGLImageKHR image = eglCreateImageKHR(mEGLDisplay,
-                EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, clientBuffer, attr);
-        if (UTILS_UNLIKELY(!image)) {
-            logEglError("eglCreateImageKHR");
-        }
-        ets->image = (uintptr_t)image;
-    }
-}
-
-void PlatformEGL::destroyExternalTextureStorage(
-        Platform::ExternalTexture* externalTexture) noexcept {
-    if (externalTexture) {
-        mExternalTextureManager.destroy(externalTexture);
-        if ((EGLImageKHR)externalTexture->image != EGL_NO_IMAGE_KHR) {
-            eglDestroyImageKHR(mEGLDisplay, (EGLImageKHR)externalTexture->image);
-            externalTexture->image = (uintptr_t)EGL_NO_IMAGE_KHR;
-        }
-    }
-}
-
-int PlatformEGL::getOSVersion() const noexcept {
-    return mOSVersion;
-}
-
 void PlatformEGL::createExternalImageTexture(void* texture) noexcept {
     auto* t = (OpenGLDriver::GLTexture*) texture;
     glGenTextures(1, &t->gl.id);
-    if (ext.OES_EGL_image_external_essl3) {
+    if (UTILS_LIKELY(ext.OES_EGL_image_external_essl3)) {
+        t->gl.target = GL_TEXTURE_EXTERNAL_OES;
         t->gl.targetIndex = (uint8_t)
-                OpenGLContext::getIndexForTextureTarget(t->gl.target = GL_TEXTURE_EXTERNAL_OES);
+                OpenGLContext::getIndexForTextureTarget(GL_TEXTURE_EXTERNAL_OES);
+    } else {
+        // if texture external is not supported, revert to texture 2d
+        t->gl.target = GL_TEXTURE_2D;
+        t->gl.targetIndex = (uint8_t)
+                OpenGLContext::getIndexForTextureTarget(GL_TEXTURE_2D);
     }
 }
 
@@ -543,7 +376,7 @@ void PlatformEGL::destroyExternalImage(void* texture) noexcept {
 }
 
 void PlatformEGL::initializeGlExtensions() noexcept {
-    unordered_string_set glExtensions;
+    GLUtils::unordered_string_set glExtensions;
     GLint n;
     glGetIntegerv(GL_NUM_EXTENSIONS, &n);
     for (GLint i = 0; i < n; ++i) {
@@ -551,11 +384,6 @@ void PlatformEGL::initializeGlExtensions() noexcept {
         glExtensions.insert(extension);
     }
     ext.OES_EGL_image_external_essl3 = glExtensions.has("GL_OES_EGL_image_external_essl3");
-}
-
-// This must called when the library is loaded. We need this to get a reference to the global VM
-void JNI_OnLoad(JavaVM* vm, void* reserved) {
-    ::filament::VirtualMachineEnv::JNI_OnLoad(vm);
 }
 
 } // namespace filament

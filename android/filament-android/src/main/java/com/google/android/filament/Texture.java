@@ -16,10 +16,10 @@
 
 package com.google.android.filament;
 
-import android.support.annotation.IntRange;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.annotation.Size;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.Size;
 
 import com.google.android.filament.proguard.UsedByReflection;
 
@@ -73,8 +73,11 @@ import static com.google.android.filament.Texture.Type.COMPRESSED;
 public class Texture {
     private long mNativeObject;
 
-    @UsedByReflection("KtxLoader.java")
     Texture(long nativeTexture) {
+        mNativeObject = nativeTexture;
+    }
+
+    public Texture(Engine engine, long nativeTexture) {
         mNativeObject = nativeTexture;
     }
 
@@ -84,10 +87,14 @@ public class Texture {
     public enum Sampler {
         /** 2D sampler */
         SAMPLER_2D,
+        /** 2D array sampler  */
+        SAMPLER_2D_ARRAY,
         /** Cubemap sampler */
         SAMPLER_CUBEMAP,
         /** External texture sampler */
-        SAMPLER_EXTERNAL
+        SAMPLER_EXTERNAL,
+        /** 3D sampler */
+        SAMPLER_3D,
     }
 
     /**
@@ -272,26 +279,40 @@ public class Texture {
      * Pixel data type
      */
     public enum Type {
-        /** unsigned byte, 8-bits */
+        /** unsigned byte, 8-bit */
         UBYTE,
-        /** signed byte, 8-bits */
+        /** signed byte, 8-bit */
         BYTE,
-        /** unsigned short, 16-bits */
+        /** unsigned short, 16-bits*/
         USHORT,
-        /** signed short, 16-bits */
+        /** signed short, 16-bit */
         SHORT,
-        /** unsigned int, 32-bits */
+        /** unsigned int, 32-bit */
         UINT,
-        /** signed int, 32-bits */
+        /** signed int, 32-bit */
         INT,
-        /** half-float, 16-bits float with 10 bits mantissa */
+        /** half-float, 16-bit float with 10 bits mantissa */
         HALF,
-        /** float, 32-bits float, with 24 bits mantissa */
+        /** float, 32-bit float, with 24 bits mantissa */
         FLOAT,
-        /** a compessed type */
+        /** a compressed type */
         COMPRESSED,
-        /** unsigned 5.6 (5.5 for blue) float packed in 32-bits */
-        UINT_10F_11F_11F_REV
+        /** unsigned 5.6 (5.5 for blue) float packed in a 32-bit integer. */
+        UINT_10F_11F_11F_REV,
+        /** unsigned 5/6 bit integers packed in a 16-bit short. */
+        USHORT_565,
+    }
+
+    /**
+     * Texture swizzling channels
+     */
+    public enum Swizzle {
+        SUBSTITUTE_ZERO,    //!< specified component is substituted with 0
+        SUBSTITUTE_ONE,     //!< specified component is substituted with 1
+        CHANNEL_0,          //!< specified component taken from channel 0
+        CHANNEL_1,          //!< specified component taken from channel 1
+        CHANNEL_2,          //!< specified component taken from channel 2
+        CHANNEL_3           //!< specified component taken from channel 3
     }
 
     /**
@@ -341,7 +362,6 @@ public class Texture {
          * </p>
          */
         @Nullable public Runnable callback;
-
 
         /**
          * Creates a <code>PixelBufferDescriptor</code>
@@ -582,8 +602,12 @@ public class Texture {
         }
 
         /**
-         * Specifies the texture's number of layers. This creates a 3D texture.
-         * @param depth texture number of layer, must be at least 1. Default is 1.
+         * Specifies the texture's number of layers. Values greater than 1 create a 3D texture.
+         *
+         * <p>This <code>Texture</code> instance must use
+         * {@link Sampler#SAMPLER_2D_ARRAY SAMPLER_2D_ARRAY} or it has no effect.</p>
+         *
+         * @param depth texture number of layers. Default is 1.
          * @return This Builder, for chaining calls.
          */
         @NonNull
@@ -640,6 +664,21 @@ public class Texture {
         }
 
         /**
+         * Specifies how a texture's channels map to color components
+         *
+         * @param r  texture channel for red component
+         * @param g  texture channel for green component
+         * @param b  texture channel for blue component
+         * @param a  texture channel for alpha component
+         * @return This Builder, for chaining calls.
+         */
+        @NonNull
+        public Builder swizzle(@NonNull Swizzle r, @NonNull Swizzle g, @NonNull Swizzle b, @NonNull Swizzle a) {
+            nBuilderSwizzle(mNativeBuilder, r.ordinal(), g.ordinal(), b.ordinal(), a.ordinal());
+            return this;
+        }
+
+        /**
          * Creates a new <code>Texture</code> instance.
          * @param engine The {@link Engine} to associate this <code>Texture</code> with.
          * @return A newly created <code>Texture</code>
@@ -686,6 +725,8 @@ public class Texture {
         public static final int UPLOADABLE = 0x8;
         /** The texture can be read from a shader or blitted from */
         public static final int SAMPLEABLE = 0x10;
+        /** Texture can be used as a subpass input */
+        public static final int SUBPASS_INPUT = 0x20;
         /** by default textures are <code>UPLOADABLE</code> and <code>SAMPLEABLE</code>*/
         public static final int DEFAULT = UPLOADABLE | SAMPLEABLE;
     }
@@ -778,7 +819,7 @@ public class Texture {
 
 
     /**
-     * <code>setImage</code> is used to modify a sub-region of the texure from a CPU-buffer.
+     * <code>setImage</code> is used to modify a sub-region of the texture from a CPU-buffer.
      *
      *  <p>This <code>Texture</code> instance must use {@link Sampler#SAMPLER_2D SAMPLER_2D} or
      *  {@link Sampler#SAMPLER_EXTERNAL SAMPLER_EXTERNAL}. If the later is specified
@@ -819,6 +860,58 @@ public class Texture {
         } else {
             result = nSetImage(getNativeObject(), engine.getNativeObject(), level,
                     xoffset, yoffset, width, height,
+                    buffer.storage, buffer.storage.remaining(),
+                    buffer.left, buffer.top, buffer.type.ordinal(), buffer.alignment,
+                    buffer.stride, buffer.format.ordinal(),
+                    buffer.handler, buffer.callback);
+        }
+        if (result < 0) {
+            throw new BufferOverflowException();
+        }
+    }
+
+    /**
+     * <code>setImage</code> is used to modify a sub-region of the 3D texture or 2D texture array
+     * from a CPU-buffer.
+     *
+     *  <p>This <code>Texture</code> instance must use {@link Sampler#SAMPLER_2D_ARRAY SAMPLER_2D_ARRAY} or
+     *  {@link Sampler#SAMPLER_3D SAMPLER_3D}.</p>
+     *
+     * @param engine    {@link Engine} this texture is associated to. Must be the
+     *                  instance passed to {@link Builder#build Builder.build()}.
+     * @param level     Level to set the image for. Must be less than {@link #getLevels()}.
+     * @param xoffset   x-offset in texel of the region to modify
+     * @param yoffset   y-offset in texel of the region to modify
+     * @param yoffset   z-offset in texel of the region to modify
+     * @param width     width in texel of the region to modify
+     * @param height    height in texel of the region to modify
+     * @param depth     depth in texel or index of the region to modify
+     * @param buffer    Client-side buffer containing the image to set.
+     *                  <code>buffer</code>'s {@link Format format} must match that
+     *                  of {@link #getFormat()}
+     *
+     * @exception BufferOverflowException if the specified parameters would result in reading
+     * outside of <code>buffer</code>.
+     *
+     * @see Builder#sampler
+     * @see PixelBufferDescriptor
+     */
+    public void setImage(@NonNull Engine engine,
+            @IntRange(from = 0) int level,
+            @IntRange(from = 0) int xoffset, @IntRange(from = 0) int yoffset, @IntRange(from = 0) int zoffset,
+            @IntRange(from = 0) int width, @IntRange(from = 0) int height, @IntRange(from = 0) int depth,
+            @NonNull PixelBufferDescriptor buffer) {
+        int result;
+        if (buffer.type == COMPRESSED) {
+            result = nSetImage3DCompressed(getNativeObject(), engine.getNativeObject(), level,
+                    xoffset, yoffset, zoffset, width, height, depth,
+                    buffer.storage, buffer.storage.remaining(),
+                    buffer.left, buffer.top, buffer.type.ordinal(), buffer.alignment,
+                    buffer.compressedSizeInBytes, buffer.compressedFormat.ordinal(),
+                    buffer.handler, buffer.callback);
+        } else {
+            result = nSetImage3D(getNativeObject(), engine.getNativeObject(), level,
+                    xoffset, yoffset, zoffset, width, height, depth,
                     buffer.storage, buffer.storage.remaining(),
                     buffer.left, buffer.top, buffer.type.ordinal(), buffer.alignment,
                     buffer.stride, buffer.format.ordinal(),
@@ -1055,6 +1148,7 @@ public class Texture {
     private static native void nBuilderSampler(long nativeBuilder, int sampler);
     private static native void nBuilderFormat(long nativeBuilder, int format);
     private static native void nBuilderUsage(long nativeBuilder, int flags);
+    private static native void nBuilderSwizzle(long nativeBuilder, int r, int g, int b, int a);
     private static native long nBuilderBuild(long nativeBuilder, long nativeEngine);
 
     private static native int nGetWidth(long nativeTexture, int level);
@@ -1072,6 +1166,18 @@ public class Texture {
 
     private static native int nSetImageCompressed(long nativeTexture, long nativeEngine,
             int level, int xoffset, int yoffset, int width, int height,
+            Buffer storage, int remaining, int left, int bottom, int type, int alignment,
+            int compressedSizeInBytes, int compressedFormat,
+            Object handler, Runnable callback);
+
+    private static native int nSetImage3D(long nativeTexture, long nativeEngine,
+            int level, int xoffset, int yoffset, int zoffset, int width, int height, int depth,
+            Buffer storage, int remaining, int left, int bottom, int type, int alignment,
+            int stride, int format,
+            Object handler, Runnable callback);
+
+    private static native int nSetImage3DCompressed(long nativeTexture, long nativeEngine,
+            int level, int xoffset, int yoffset, int zoffset, int width, int height, int depth,
             Buffer storage, int remaining, int left, int bottom, int type, int alignment,
             int compressedSizeInBytes, int compressedFormat,
             Object handler, Runnable callback);

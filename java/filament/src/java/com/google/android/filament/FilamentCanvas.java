@@ -23,7 +23,7 @@ import com.google.android.filament.Engine;
 import com.google.android.filament.SwapChain;
 import com.google.android.filament.View;
 import com.google.android.filament.Renderer;
-import android.support.annotation.NonNull;
+import androidx.annotation.NonNull;
 
 public class FilamentCanvas extends Canvas implements FilamentTarget  {
     private SwapChain mSwapChain;
@@ -47,7 +47,7 @@ public class FilamentCanvas extends Canvas implements FilamentTarget  {
     }
 
     public boolean beginFrame(@NonNull Engine engine, @NonNull Renderer renderer) {
-        return renderer.beginFrame(getSwapChain(engine));
+        return renderer.beginFrame(getSwapChain(engine), 0L);
     }
 
     public void endFrame(Renderer renderer) {

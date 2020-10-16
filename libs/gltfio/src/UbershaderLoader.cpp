@@ -17,10 +17,18 @@
 #include <gltfio/MaterialProvider.h>
 
 #include <filament/MaterialInstance.h>
+#include <filament/Texture.h>
+#include <filament/TextureSampler.h>
 
 #include <math/mat4.h>
 
+#include <utils/Log.h>
+
+#if GLTFIO_LITE
+#include "gltfresources_lite.h"
+#else
 #include "gltfresources.h"
+#endif
 
 using namespace filament;
 using namespace filament::math;
@@ -53,20 +61,29 @@ public:
         SPECULAR_GLOSSINESS = 2,
     };
 
-    mutable Material* mMaterials[9] = {};
+    mutable Material* mMaterials[10] = {};
     Texture* mDummyTexture = nullptr;
 
     filament::Engine* mEngine;
 };
 
+#if GLTFIO_LITE
+
+#define CREATE_MATERIAL(name) Material::Builder() \
+    .package(GLTFRESOURCES_LITE_ ## name ## _DATA, GLTFRESOURCES_LITE_ ## name ## _SIZE) \
+    .build(*mEngine);
+
+#else
+
 #define CREATE_MATERIAL(name) Material::Builder() \
     .package(GLTFRESOURCES_ ## name ## _DATA, GLTFRESOURCES_ ## name ## _SIZE) \
     .build(*mEngine);
 
-#define MATINDEX(shading, alpha) (int(shading) + 3 * int(alpha))
+#endif
+
+#define MATINDEX(shading, alpha, transmit) (transmit ? 9 : (int(shading) + 3 * int(alpha)))
 
 UbershaderLoader::UbershaderLoader(Engine* engine) : mEngine(engine) {
-    #ifdef EMSCRIPTEN
     unsigned char texels[4] = {};
     mDummyTexture = Texture::Builder()
             .width(1).height(1)
@@ -75,7 +92,6 @@ UbershaderLoader::UbershaderLoader(Engine* engine) : mEngine(engine) {
     Texture::PixelBufferDescriptor pbd(texels, sizeof(texels), Texture::Format::RGBA,
             Texture::Type::UBYTE);
     mDummyTexture->setImage(*mEngine, 0, std::move(pbd));
-    #endif
 }
 
 size_t UbershaderLoader::getMaterialsCount() const noexcept {
@@ -97,20 +113,39 @@ void UbershaderLoader::destroyMaterials() {
 Material* UbershaderLoader::getMaterial(const MaterialKey& config) const {
     const ShadingMode shading = config.unlit ? UNLIT :
             (config.useSpecularGlossiness ? SPECULAR_GLOSSINESS : LIT);
-    const int matindex = MATINDEX(shading, config.alphaMode);
+    const int matindex = MATINDEX(shading, config.alphaMode, config.hasTransmission);
     if (mMaterials[matindex] != nullptr) {
         return mMaterials[matindex];
     }
     switch (matindex) {
-        case MATINDEX(LIT, AlphaMode::OPAQUE): mMaterials[matindex] = CREATE_MATERIAL(LIT_OPAQUE); break;
-        case MATINDEX(LIT, AlphaMode::MASK): mMaterials[matindex] = CREATE_MATERIAL(LIT_MASKED); break;
-        case MATINDEX(LIT, AlphaMode::BLEND): mMaterials[matindex] = CREATE_MATERIAL(LIT_FADE); break;
-        case MATINDEX(UNLIT, AlphaMode::OPAQUE): mMaterials[matindex] = CREATE_MATERIAL(UNLIT_OPAQUE); break;
-        case MATINDEX(UNLIT, AlphaMode::MASK): mMaterials[matindex] = CREATE_MATERIAL(UNLIT_MASKED); break;
-        case MATINDEX(UNLIT, AlphaMode::BLEND): mMaterials[matindex] = CREATE_MATERIAL(UNLIT_FADE); break;
-        case MATINDEX(SPECULAR_GLOSSINESS, AlphaMode::OPAQUE): mMaterials[matindex] = CREATE_MATERIAL(SPECULARGLOSSINESS_OPAQUE); break;
-        case MATINDEX(SPECULAR_GLOSSINESS, AlphaMode::MASK): mMaterials[matindex] = CREATE_MATERIAL(SPECULARGLOSSINESS_MASKED); break;
-        case MATINDEX(SPECULAR_GLOSSINESS, AlphaMode::BLEND): mMaterials[matindex] = CREATE_MATERIAL(SPECULARGLOSSINESS_FADE); break;
+
+        #if !GLTFIO_LITE || defined(GLTFRESOURCES_LITE_LIT_OPAQUE_DATA)
+        case MATINDEX(LIT, AlphaMode::OPAQUE, false): mMaterials[matindex] = CREATE_MATERIAL(LIT_OPAQUE); break;
+        #endif
+
+        #if !GLTFIO_LITE || defined(GLTFRESOURCES_LITE_LIT_BLEND_DATA)
+        case MATINDEX(LIT, AlphaMode::BLEND, false): mMaterials[matindex] = CREATE_MATERIAL(LIT_FADE); break;
+        #endif
+
+        #if !GLTFIO_LITE
+        case MATINDEX(LIT, AlphaMode::MASK, false): mMaterials[matindex] = CREATE_MATERIAL(LIT_MASKED); break;
+        case MATINDEX(UNLIT, AlphaMode::OPAQUE, false): mMaterials[matindex] = CREATE_MATERIAL(UNLIT_OPAQUE); break;
+        case MATINDEX(UNLIT, AlphaMode::MASK, false): mMaterials[matindex] = CREATE_MATERIAL(UNLIT_MASKED); break;
+        case MATINDEX(UNLIT, AlphaMode::BLEND, false): mMaterials[matindex] = CREATE_MATERIAL(UNLIT_FADE); break;
+        case MATINDEX(SPECULAR_GLOSSINESS, AlphaMode::OPAQUE, false): mMaterials[matindex] = CREATE_MATERIAL(SPECULARGLOSSINESS_OPAQUE); break;
+        case MATINDEX(SPECULAR_GLOSSINESS, AlphaMode::MASK, false): mMaterials[matindex] = CREATE_MATERIAL(SPECULARGLOSSINESS_MASKED); break;
+        case MATINDEX(SPECULAR_GLOSSINESS, AlphaMode::BLEND, false): mMaterials[matindex] = CREATE_MATERIAL(SPECULARGLOSSINESS_FADE); break;
+        case MATINDEX(0, 0, true): mMaterials[matindex] = CREATE_MATERIAL(LIT_TRANSMISSION); break;
+        #endif
+    }
+    if (mMaterials[matindex] == nullptr) {
+        slog.w << "Unsupported glTF material configuration; falling back to LIT_OPAQUE." << io::endl;
+        MaterialKey litOpaque = config;
+        litOpaque.alphaMode = AlphaMode::OPAQUE;
+        litOpaque.hasTransmission = false;
+        litOpaque.useSpecularGlossiness = false;
+        litOpaque.unlit = false;
+        return getMaterial(litOpaque);
     }
     return mMaterials[matindex];
 }
@@ -121,12 +156,20 @@ MaterialInstance* UbershaderLoader::createMaterialInstance(MaterialKey* config, 
     if (config->enableDiagnostics) {
         return nullptr;
     }
-    gltfio::details::constrainMaterial(config, uvmap);
+
+    // Due to sampler overload, disable transmission if necessary and print a friendly warning.
+    if (config->hasClearCoat && config->hasTransmission) {
+        slog.w << "Transmission is not supported in ubershader mode for clearcoat materials "
+                    "(" << label << ")." << io::endl;
+        config->hasTransmission = false;
+    }
+
+    constrainMaterial(config, uvmap);
     auto getUvIndex = [uvmap](uint8_t srcIndex, bool hasTexture) -> int {
         return hasTexture ? int(uvmap->at(srcIndex)) - 1 : -1;
     };
     Material* material = getMaterial(*config);
-    MaterialInstance* mi = material->createInstance();
+    MaterialInstance* mi = material->createInstance(label);
     mi->setParameter("baseColorIndex",
             getUvIndex(config->baseColorUV, config->hasBaseColorTexture));
     mi->setParameter("normalIndex", getUvIndex(config->normalUV, config->hasNormalTexture));
@@ -138,25 +181,43 @@ MaterialInstance* UbershaderLoader::createMaterialInstance(MaterialKey* config, 
     mi->setDoubleSided(config->doubleSided);
     mi->setCullingMode(config->doubleSided ? CullingMode::NONE : CullingMode::BACK);
 
+    #if !GLTFIO_LITE
     mat3f identity;
     mi->setParameter("baseColorUvMatrix", identity);
     mi->setParameter("metallicRoughnessUvMatrix", identity);
     mi->setParameter("normalUvMatrix", identity);
     mi->setParameter("occlusionUvMatrix", identity);
     mi->setParameter("emissiveUvMatrix", identity);
+    if (config->hasTransmission) {
+        mi->setParameter("transmissionUvMatrix", identity);
+        mi->setParameter("transmissionIndex",
+                getUvIndex(config->transmissionUV, config->hasTransmissionTexture));
+    } else {
+        mi->setParameter("clearCoatIndex",
+                getUvIndex(config->clearCoatUV, config->hasClearCoatTexture));
+        mi->setParameter("clearCoatRoughnessIndex",
+                getUvIndex(config->clearCoatRoughnessUV, config->hasClearCoatRoughnessTexture));
+        mi->setParameter("clearCoatNormalIndex",
+                getUvIndex(config->clearCoatNormalUV, config->hasClearCoatNormalTexture));
+        mi->setParameter("clearCoatUvMatrix", identity);
+        mi->setParameter("clearCoatRoughnessUvMatrix", identity);
+        mi->setParameter("clearCoatNormalUvMatrix", identity);
+    }
+    #endif
 
-    // Some WebGL implementations emit a warning at draw call time if the shader declares a sampler
-    // that has not been bound to a texture, even if the texture lookup is conditional. Therefore we
-    // need to ensure that every sampler parameter is bound to a dummy texture, even if it is never
-    // actually sampled from.
-    #ifdef EMSCRIPTEN
     TextureSampler sampler;
     mi->setParameter("normalMap", mDummyTexture, sampler);
     mi->setParameter("baseColorMap", mDummyTexture, sampler);
     mi->setParameter("metallicRoughnessMap", mDummyTexture, sampler);
     mi->setParameter("occlusionMap", mDummyTexture, sampler);
     mi->setParameter("emissiveMap", mDummyTexture, sampler);
-    #endif
+    if (config->hasTransmission) {
+        mi->setParameter("transmissionMap", mDummyTexture, sampler);
+    } else {
+        mi->setParameter("clearCoatMap", mDummyTexture, sampler);
+        mi->setParameter("clearCoatRoughnessMap", mDummyTexture, sampler);
+        mi->setParameter("clearCoatNormalMap", mDummyTexture, sampler);
+    }
 
     return mi;
 }

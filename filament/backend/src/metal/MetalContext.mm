@@ -33,34 +33,106 @@ void presentDrawable(bool presentFrame, void* user) {
     // The drawable will be released here when the "drawable" variable goes out of scope.
 }
 
-id<CAMetalDrawable> acquireDrawable(MetalContext* context) {
-    if (!context->currentDrawable) {
-        context->currentDrawable = [context->currentSurface->layer nextDrawable];
-
-        if (context->frameFinishedCallback) {
-            id<CAMetalDrawable> drawable = context->currentDrawable;
-            backend::FrameFinishedCallback callback = context->frameFinishedCallback;
-            void* userData = context->frameFinishedUserData;
-            // This block strongly captures drawable to keep it alive until the handler executes.
-            [context->currentCommandBuffer addScheduledHandler:^(id<MTLCommandBuffer> cb) {
-                // CFBridgingRetain is used here to give the drawable a +1 retain count before
-                // casting it to a void*.
-                PresentCallable callable(presentDrawable, (void*) CFBridgingRetain(drawable));
-                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                    callback(callable, userData);
-                });
-            }];
+id<MTLTexture> acquireDrawable(MetalContext* context) {
+    if (context->currentDrawable) {
+        return context->currentDrawable.texture;
+    }
+    if (context->currentSurface->isHeadless()) {
+        if (context->headlessDrawable) {
+            return context->headlessDrawable;
         }
+        // For headless surfaces we construct a "fake" drawable, which is simply a renderable
+        // texture.
+        MTLTextureDescriptor* textureDescriptor = [MTLTextureDescriptor new];
+        textureDescriptor.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        textureDescriptor.width = context->currentSurface->getSurfaceWidth();
+        textureDescriptor.height = context->currentSurface->getSurfaceHeight();
+        // Specify MTLTextureUsageShaderRead so the headless surface can be blitted from.
+        textureDescriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+#if defined(IOS)
+        textureDescriptor.storageMode = MTLStorageModeShared;
+#else
+        textureDescriptor.storageMode = MTLStorageModeManaged;
+#endif
+        context->headlessDrawable = [context->device newTextureWithDescriptor:textureDescriptor];
+        return context->headlessDrawable;
+    }
+
+    context->currentDrawable = [context->currentSurface->getLayer() nextDrawable];
+
+    if (context->frameFinishedCallback) {
+        id<CAMetalDrawable> drawable = context->currentDrawable;
+        backend::FrameFinishedCallback callback = context->frameFinishedCallback;
+        void* userData = context->frameFinishedUserData;
+        // This block strongly captures drawable to keep it alive until the handler executes.
+        [getPendingCommandBuffer(context) addScheduledHandler:^(id<MTLCommandBuffer> cb) {
+            // CFBridgingRetain is used here to give the drawable a +1 retain count before
+            // casting it to a void*.
+            PresentCallable callable(presentDrawable, (void*) CFBridgingRetain(drawable));
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                callback(callable, userData);
+            });
+        }];
     }
     ASSERT_POSTCONDITION(context->currentDrawable != nil, "Could not obtain drawable.");
-    return context->currentDrawable;
+    return context->currentDrawable.texture;
 }
 
-id<MTLCommandBuffer> acquireCommandBuffer(MetalContext* context) {
-    id<MTLCommandBuffer> commandBuffer = [context->commandQueue commandBuffer];
-    ASSERT_POSTCONDITION(commandBuffer != nil, "Could not obtain command buffer.");
-    context->currentCommandBuffer = commandBuffer;
-    return commandBuffer;
+id<MTLTexture> acquireDepthTexture(MetalContext* context) {
+    if (context->currentDepthTexture) {
+        // If the surface size has changed, we'll need to allocate a new depth texture.
+        if (context->currentDepthTexture.width != context->currentSurface->getSurfaceWidth() ||
+            context->currentDepthTexture.height != context->currentSurface->getSurfaceHeight()) {
+            context->currentDepthTexture = nil;
+        } else {
+            return context->currentDepthTexture;
+        }
+    }
+
+    const MTLPixelFormat depthFormat =
+#if defined(IOS)
+            MTLPixelFormatDepth32Float;
+#else
+    context->device.depth24Stencil8PixelFormatSupported ?
+            MTLPixelFormatDepth24Unorm_Stencil8 : MTLPixelFormatDepth32Float;
+#endif
+
+    const NSUInteger width = context->currentSurface->getSurfaceWidth();
+    const NSUInteger height = context->currentSurface->getSurfaceHeight();
+    MTLTextureDescriptor* descriptor =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:depthFormat
+                                                               width:width
+                                                              height:height
+                                                           mipmapped:NO];
+    descriptor.usage = MTLTextureUsageRenderTarget;
+    descriptor.resourceOptions = MTLResourceStorageModePrivate;
+
+    context->currentDepthTexture = [context->device newTextureWithDescriptor:descriptor];
+
+    return context->currentDepthTexture;
+}
+
+id<MTLCommandBuffer> getPendingCommandBuffer(MetalContext* context) {
+    if (context->pendingCommandBuffer) {
+        return context->pendingCommandBuffer;
+    }
+    context->pendingCommandBuffer = [context->commandQueue commandBuffer];
+    // It's safe for this block to capture the context variable. MetalDriver::terminate will ensure
+    // all frames and their completion handlers finish before context is deallocated.
+    [context->pendingCommandBuffer addCompletedHandler:^(id <MTLCommandBuffer> buffer) {
+        context->resourceTracker.clearResources((__bridge void*) buffer);
+    }];
+    ASSERT_POSTCONDITION(context->pendingCommandBuffer, "Could not obtain command buffer.");
+    return context->pendingCommandBuffer;
+}
+
+void submitPendingCommands(MetalContext* context) {
+    if (!context->pendingCommandBuffer) {
+        return;
+    }
+    assert(context->pendingCommandBuffer.status != MTLCommandBufferStatusCommitted);
+    [context->pendingCommandBuffer commit];
+    context->pendingCommandBuffer = nil;
 }
 
 id<MTLTexture> getOrCreateEmptyTexture(MetalContext* context) {
@@ -84,6 +156,10 @@ id<MTLTexture> getOrCreateEmptyTexture(MetalContext* context) {
     context->emptyTexture = texture;
 
     return context->emptyTexture;
+}
+
+bool isInRenderPass(MetalContext* context) {
+    return context->currentRenderPassEncoder != nil;
 }
 
 } // namespace metal

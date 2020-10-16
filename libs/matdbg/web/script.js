@@ -15,6 +15,7 @@
  */
 
 const kMonacoBaseUrl = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.17.1/min/';
+const kUntitledPlaceholder = "untitled";
 
 const materialList = document.getElementById("material-list");
 const materialDetail = document.getElementById("material-detail");
@@ -52,8 +53,9 @@ function rebuildMaterial() {
     if ("glindex" in gCurrentShader)    { api = 1; index = gCurrentShader.glindex; }
     if ("vkindex" in gCurrentShader)    { api = 2; index = gCurrentShader.vkindex; }
     if ("metalindex" in gCurrentShader) { api = 3; index = gCurrentShader.metalindex; }
-    const text = getShaderRecord(gCurrentShader).text;
-    gSocket.send(`EDIT ${gCurrentShader.matid} ${api} ${index} ${text}`);
+    const editedText = getShaderRecord(gCurrentShader).text;
+    const byteCount = new Blob([editedText]).size;
+    gSocket.send(`EDIT ${gCurrentShader.matid} ${api} ${index} ${byteCount} ${editedText}`);
 }
 
 document.querySelector("body").addEventListener("click", (evt) => {
@@ -64,7 +66,7 @@ document.querySelector("body").addEventListener("click", (evt) => {
 
     // Handle selection of a material.
     if (anchor.classList.contains("material")) {
-        selectMaterial(anchor.dataset.matid);
+        selectMaterial(anchor.dataset.matid, true);
         return;
     }
 
@@ -86,7 +88,7 @@ document.querySelector("body").addEventListener("click", (evt) => {
 // TODO: this function could be vastly simplified by changing the format of the shader selector.
 function selectNextShader(materialStep, shaderStep) {
     if (materialStep !== 0) {
-        const matids = Object.keys(gMaterialDatabase);
+        const matids = getDisplayedMaterials().map(m => m.matid).filter(m => m);
         const currentIndex = matids.indexOf(gCurrentMaterial);
         const nextIndex = currentIndex + materialStep;
         if (nextIndex >= 0 && nextIndex < matids.length) {
@@ -124,9 +126,6 @@ function fetchMaterial(matid) {
         }
         matInfo.matid = matid;
         gMaterialDatabase[matid] = matInfo;
-        for (const shader of matInfo.opengl) fetchShader({glindex: shader.index}, matInfo);
-        for (const shader of matInfo.vulkan) fetchShader({vkindex: shader.index}, matInfo);
-        for (const shader of matInfo.metal)  fetchShader({metalindex: shader.index}, matInfo);
         renderMaterialList();
     });
 }
@@ -162,6 +161,10 @@ function queryActiveShaders() {
         }
         renderMaterialList();
         renderMaterialDetail();
+    })
+    .catch((error) => {
+        // This is expected to fail when the server is hosted from matinfo instead of Engine, since
+        // there are no active shaders in that situation.
     });
 }
 
@@ -208,15 +211,12 @@ function fetchMaterials() {
                 continue;
             }
             gMaterialDatabase[matInfo.matid] = matInfo;
-            for (const shader of matInfo.opengl) fetchShader({glindex: shader.index}, matInfo);
-            for (const shader of matInfo.vulkan) fetchShader({vkindex: shader.index}, matInfo);
-            for (const shader of matInfo.metal)  fetchShader({metalindex: shader.index}, matInfo);
         }
-        selectMaterial(matJson[0].matid);
+        selectMaterial(matJson[0].matid, true);
     });
 }
 
-function fetchShader(selection, matinfo) {
+function fetchShader(selection, matinfo, onDone) {
     let query, target;
     if (selection.glindex >= 0) {
         query = `type=glsl&glindex=${selection.glindex}`;
@@ -234,20 +234,69 @@ function fetchShader(selection, matinfo) {
         return response.text();
     }).then(function(shaderText) {
         target.text = shaderText;
+        onDone();
     });
 }
 
-function renderMaterialList() {
-    const materials = [];
-    for (const matid in gMaterialDatabase) {
-        const item = gMaterialDatabase[matid];
+function getDisplayedMaterials() {
+    const items = [];
+
+    // Names need not be unique, so we display a numeric suffix for non-unique names.
+    // To achieve stable ordering of anonymous materials, we first sort by matid.
+    const labels = new Set();
+    const matids = Object.keys(gMaterialDatabase).sort();
+    const duplicatedLabels = {};
+    for (const matid of matids) {
+        const name = gMaterialDatabase[matid].name || kUntitledPlaceholder;
+        if (labels.has(name)) {
+            duplicatedLabels[name] = 0;
+        } else {
+            labels.add(name);
+        }
+    }
+
+    // Build a list of objects to pass into the template string.
+    for (const matid of matids) {
+        const item =  Object.assign({}, gMaterialDatabase[matid]);
         item.classes = matid === gCurrentMaterial ? "current " : "";
         if (!item.active) {
             item.classes += "inactive "
         }
-        materials.push(item);
+        item.domain = item.shading.material_domain === "surface" ? "surface" : "postpro";
+        item.is_material = true;
+
+        const name = item.name || kUntitledPlaceholder;
+        if (name in duplicatedLabels) {
+            const index = duplicatedLabels[name];
+            item.name = `${name} (${index})`;
+            duplicatedLabels[name] = index + 1;
+        } else {
+            item.name = name;
+        }
+
+        items.push(item);
     }
-    materialList.innerHTML = Mustache.render(matListTemplate.innerHTML, { "material": materials } );
+
+    // The template takes a flat list of items, so here we insert items for section headers using
+    // blank names, which causes them to sort to the top of their respective sections.
+    const sectionLabel = {"is_label": true, "name": ""};
+    items.push(Object.assign({"label": "Surface materials", "domain": "surface"}, sectionLabel));
+    items.push(Object.assign({"label": "PostProcess materials", "domain": "postpro"}, sectionLabel));
+
+    // Next, sort all materials and section headers.
+    items.sort((a, b) => {
+        if (a.domain > b.domain) return -1;
+        if (a.domain < b.domain) return +1;
+        if (a.name < b.name) return -1;
+        if (a.name > b.name) return +1;
+        return 0;
+    });
+    return items;
+}
+
+function renderMaterialList() {
+    const items = getDisplayedMaterials();
+    materialList.innerHTML = Mustache.render(matListTemplate.innerHTML, { "item": items } );
 }
 
 function updateClassList(array, indexProperty, selectedIndex) {
@@ -266,7 +315,11 @@ function renderMaterialDetail() {
     updateClassList(mat.opengl, "index", ok ? parseInt(gCurrentShader.glindex) : -1);
     updateClassList(mat.vulkan, "index", ok ? parseInt(gCurrentShader.vkindex) : -1);
     updateClassList(mat.metal, "index", ok ? parseInt(gCurrentShader.metalindex) : -1);
-    materialDetail.innerHTML = Mustache.render(matDetailTemplate.innerHTML, mat);
+    const item =  Object.assign({}, mat);
+    if (item.shading.material_domain !== "surface") {
+        delete item.shading;
+    }
+    materialDetail.innerHTML = Mustache.render(matDetailTemplate.innerHTML, item);
 }
 
 function getShaderRecord(selection) {
@@ -279,27 +332,38 @@ function getShaderRecord(selection) {
 
 function renderShaderStatus() {
     const shader = getShaderRecord(gCurrentShader);
+    let statusString = "";
     if (shader && shader.modified) {
-        header.innerHTML = "matdbg &nbsp; <a class='rebuild'>[rebuild]</a>";
-    } else {
-        header.innerHTML = "matdbg";
+        statusString += " &nbsp; <a class='rebuild'>[rebuild]</a>";
     }
+    if (shader && !shader.active) {
+        statusString += " &nbsp; <span class='warning'> selected variant is inactive </span>";
+    }
+    header.innerHTML = "matdbg" + statusString;
 }
 
 function selectShader(selection) {
     const shader = getShaderRecord(selection);
-    if (!shader || !shader.text) {
-        console.error("Shader source not yet available.");
+    if (!shader) {
+        console.error("Shader not yet available.")
         return;
     }
-    gCurrentShader = selection;
-    gCurrentShader.matid = gCurrentMaterial;
-    renderMaterialDetail();
-    gEditorIsLoading = true;
-    gEditor.setValue(shader.text);
-    gEditorIsLoading = false;
-    shaderSource.style.visibility = "visible";
-    renderShaderStatus();
+    const showShaderSource = () => {
+        gCurrentShader = selection;
+        gCurrentShader.matid = gCurrentMaterial;
+        renderMaterialDetail();
+        gEditorIsLoading = true;
+        gEditor.setValue(shader.text);
+        gEditorIsLoading = false;
+        shaderSource.style.visibility = "visible";
+        renderShaderStatus();
+    };
+    if (!shader.text) {
+        const matInfo = gMaterialDatabase[gCurrentMaterial];
+        fetchShader(selection, matInfo, showShaderSource);
+    } else {
+        showShaderSource();
+    }
 }
 
 function onEdit(changes) {
@@ -342,11 +406,14 @@ function init() {
             minimap: { enabled: false }
         });
         gEditor.onDidChangeModelContent((e) => { onEdit(e.changes); });
+
         gEditor.addCommand(KeyMod.CtrlCmd | KeyCode.KEY_S, () => rebuildMaterial());
-        gEditor.addCommand(KeyMod.WinCtrl | KeyCode.UpArrow, () => selectNextShader(-1, 0));
-        gEditor.addCommand(KeyMod.WinCtrl | KeyCode.DownArrow, () => selectNextShader(+1, 0));
-        gEditor.addCommand(KeyMod.WinCtrl | KeyCode.LeftArrow, () => selectNextShader(0, -1));
-        gEditor.addCommand(KeyMod.WinCtrl | KeyCode.RightArrow, () => selectNextShader(0, +1));
+
+        gEditor.addCommand(KeyMod.Shift | KeyMod.WinCtrl | KeyCode.UpArrow, () => selectNextShader(-1, 0));
+        gEditor.addCommand(KeyMod.Shift | KeyMod.WinCtrl | KeyCode.DownArrow, () => selectNextShader(+1, 0));
+        gEditor.addCommand(KeyMod.Shift | KeyMod.WinCtrl | KeyCode.LeftArrow, () => selectNextShader(0, -1));
+        gEditor.addCommand(KeyMod.Shift | KeyMod.WinCtrl | KeyCode.RightArrow, () => selectNextShader(0, +1));
+
         fetchMaterials();
     });
 

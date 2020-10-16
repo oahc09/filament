@@ -12,97 +12,55 @@ jobs:
         os: [macos-latest, ubuntu-latest]
 
     steps:
-      - name: Checkout Filament
-        run: |
-          git version
-          git init $GITHUB_WORKSPACE
-          cd $GITHUB_WORKSPACE
-          git remote add origin https://github.com/google/filament
-          git config gc.auto 0
-          git fetch --tags --prune --progress --no-recurse-submodules origin +${GITHUB_REF}:${GITHUB_REF/refs\//refs\/remote\/}
-          git checkout --progress --force ${GITHUB_REF/refs\//refs\/remote\/}
+      - uses: actions/checkout@v2.0.0
       - name: Run build script
         run: |
           WORKFLOW_OS=`echo \`uname\` | sed "s/Darwin/mac/" | tr [:upper:] [:lower:]`
-          cd build/$WORKFLOW_OS && ./build.sh ${TARGET}
-        env:
-          TARGET: presubmit
+          cd build/$WORKFLOW_OS && printf "y" | ./build.sh presubmit
+      - name: Test material parser
+        run: |
+          out/cmake-release/filament/test/test_material_parser
 
   build-windows:
     name: build-windows
     runs-on: windows-latest
 
     steps:
-      - name: Checkout Filament
-        run: |
-          git version
-          git init %GITHUB_WORKSPACE%
-          cd %GITHUB_WORKSPACE%
-          git remote add origin https://github.com/google/filament
-          git config gc.auto 0
-          git fetch --tags --prune --progress --no-recurse-submodules origin +%GITHUB_REF%:%GITHUB_REF:refs/=refs/remote/%
-          git checkout --progress --force %GITHUB_REF:refs/=refs/remote/%
-        shell: cmd
+      - uses: actions/checkout@v2.0.0
       - name: Run build script
         run: |
-          build\windows\build-github.bat
+          build\windows\build-github.bat presubmit
+        shell: cmd
 
   build-android:
     name: build-android
     runs-on: macos-latest
 
     steps:
-      - name: Checkout Filament
-        run: |
-          git version
-          git init $GITHUB_WORKSPACE
-          cd $GITHUB_WORKSPACE
-          git remote add origin https://github.com/google/filament
-          git config gc.auto 0
-          git fetch --tags --prune --progress --no-recurse-submodules origin +${GITHUB_REF}:${GITHUB_REF/refs\//refs\/remote\/}
-          git checkout --progress --force ${GITHUB_REF/refs\//refs\/remote\/}
+      - uses: actions/checkout@v2.0.0
       - name: Run build script
         run: |
-          cd build/android && ./build.sh ${TARGET}
-        env:
-          TARGET: presubmit
+          cd build/android && printf "y" | ./build.sh presubmit
 
   build-ios:
     name: build-iOS
     runs-on: macos-latest
 
     steps:
-      - name: Checkout Filament
-        run: |
-          git version
-          git init $GITHUB_WORKSPACE
-          cd $GITHUB_WORKSPACE
-          git remote add origin https://github.com/google/filament
-          git config gc.auto 0
-          git fetch --tags --prune --progress --no-recurse-submodules origin +${GITHUB_REF}:${GITHUB_REF/refs\//refs\/remote\/}
-          git checkout --progress --force ${GITHUB_REF/refs\//refs\/remote\/}
+      - uses: actions/checkout@v2.0.0
       - name: Run build script
         run: |
-          cd build/ios && ./build.sh ${TARGET}
-        env:
-          TARGET: presubmit
+          cd build/ios && printf "y" | ./build.sh presubmit
+      - name: Build iOS samples
+        run: |
+          cd build/ios && ./build-samples.sh presubmit
 
   build-web:
     name: build-web
     runs-on: macos-latest
 
     steps:
-      - name: Checkout Filament
-        run: |
-          git version
-          git init $GITHUB_WORKSPACE
-          cd $GITHUB_WORKSPACE
-          git remote add origin https://github.com/google/filament
-          git config gc.auto 0
-          git fetch --tags --prune --progress --no-recurse-submodules origin +${GITHUB_REF}:${GITHUB_REF/refs\//refs\/remote\/}
-          git checkout --progress --force ${GITHUB_REF/refs\//refs\/remote\/}
+      - uses: actions/checkout@v2.0.0
       - name: Run build script
         run: |
-          cd build/web && ./build.sh ${TARGET}
-        env:
-          TARGET: presubmit
+          cd build/web && printf "y" | ./build.sh presubmit

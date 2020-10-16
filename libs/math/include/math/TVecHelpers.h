@@ -20,8 +20,6 @@
 #include <math/compiler.h>
 
 #include <cmath>            // for std:: namespace
-#include <functional>       // for appl() and map()
-#include <iostream>         // for operator<<
 
 #include <math.h>
 #include <stdint.h>
@@ -52,10 +50,10 @@ using arithmetic_result_t = typename arithmetic_result<T, U>::type;
 
 template<typename A, typename B = int, typename C = int, typename D = int>
 using enable_if_arithmetic_t = std::enable_if_t<
-        std::is_arithmetic<A>::value &&
-        std::is_arithmetic<B>::value &&
-        std::is_arithmetic<C>::value &&
-        std::is_arithmetic<D>::value>;
+        is_arithmetic<A>::value &&
+        is_arithmetic<B>::value &&
+        is_arithmetic<C>::value &&
+        is_arithmetic<D>::value>;
 
 /*
  * No user serviceable parts here.
@@ -465,9 +463,51 @@ private:
         return v;
     }
 
+    friend inline VECTOR<T> MATH_PURE exp(VECTOR<T> v) {
+        for (size_t i = 0; i < v.size(); i++) {
+            v[i] = std::exp(v[i]);
+        }
+        return v;
+    }
+
     friend inline VECTOR<T> MATH_PURE pow(VECTOR<T> v, T p) {
         for (size_t i = 0; i < v.size(); i++) {
             v[i] = std::pow(v[i], p);
+        }
+        return v;
+    }
+
+    friend inline VECTOR<T> MATH_PURE pow(T v, VECTOR<T> p) {
+        for (size_t i = 0; i < p.size(); i++) {
+            p[i] = std::pow(v, p[i]);
+        }
+        return p;
+    }
+
+    friend inline VECTOR<T> MATH_PURE pow(VECTOR<T> v, VECTOR<T> p) {
+        for (size_t i = 0; i < v.size(); i++) {
+            v[i] = std::pow(v[i], p[i]);
+        }
+        return v;
+    }
+
+    friend inline VECTOR<T> MATH_PURE log(VECTOR<T> v) {
+        for (size_t i = 0; i < v.size(); i++) {
+            v[i] = std::log(v[i]);
+        }
+        return v;
+    }
+
+    friend inline VECTOR<T> MATH_PURE log10(VECTOR<T> v) {
+        for (size_t i = 0; i < v.size(); i++) {
+            v[i] = std::log10(v[i]);
+        }
+        return v;
+    }
+
+    friend inline VECTOR<T> MATH_PURE log2(VECTOR<T> v) {
+        for (size_t i = 0; i < v.size(); i++) {
+            v[i] = std::log2(v[i]);
         }
         return v;
     }
@@ -528,9 +568,28 @@ private:
         return r;
     }
 
-    friend inline VECTOR<T> MATH_PURE apply(VECTOR<T> v, const std::function<T(T)>& f) {
+    friend inline constexpr VECTOR<T> MATH_PURE mix(const VECTOR<T>& u, VECTOR<T> v, T a) {
         for (size_t i = 0; i < v.size(); i++) {
-            v[i] = f(v[i]);
+            v[i] = u[i] * (T(1) - a) + v[i] * a;
+        }
+        return v;
+    }
+
+    friend inline constexpr VECTOR<T> MATH_PURE smoothstep(T edge0, T edge1, VECTOR<T> v) {
+        VECTOR<T> t = saturate((v - edge0) / (edge1 - edge0));
+        return t * t * (T(3) - T(2) * t);
+    }
+
+    friend inline constexpr VECTOR<T> MATH_PURE step(T edge, VECTOR<T> v) {
+        for (size_t i = 0; i < v.size(); i++) {
+            v[i] = v[i] < edge ? T(0) : T(1);
+        }
+        return v;
+    }
+
+    friend inline constexpr VECTOR<T> MATH_PURE step(VECTOR<T> edge, VECTOR<T> v) {
+        for (size_t i = 0; i < v.size(); i++) {
+            v[i] = v[i] < edge[i] ? T(0) : T(1);
         }
         return v;
     }
@@ -548,42 +607,6 @@ private:
             result &= (v[i] != T(0));
         }
         return result;
-    }
-
-    template<typename R>
-    friend inline VECTOR<R> MATH_PURE map(VECTOR<T> v, const std::function<R(T)>& f) {
-        VECTOR<R> result;
-        for (size_t i = 0; i < v.size(); i++) {
-            result[i] = f(v[i]);
-        }
-        return result;
-    }
-};
-
-/*
- * TVecDebug implements functions on a vector of type BASE<T>.
- *
- * BASE only needs to implement operator[] and size().
- * By simply inheriting from TVecDebug<BASE, T> BASE will automatically
- * get all the functionality here.
- */
-template<template<typename T> class VECTOR, typename T>
-class TVecDebug {
-private:
-    /*
-     * NOTE: the functions below ARE NOT member methods. They are friend functions
-     * with they definition inlined with their declaration. This makes these
-     * template functions available to the compiler when (and only when) this class
-     * is instantiated, at which point they're only templated on the 2nd parameter
-     * (the first one, BASE<T> being known).
-     */
-    friend std::ostream& operator<<(std::ostream& stream, const VECTOR<T>& v) {
-        stream << "< ";
-        for (size_t i = 0; i < v.size() - 1; i++) {
-            stream << T(v[i]) << ", ";
-        }
-        stream << T(v[v.size() - 1]) << " >";
-        return stream;
     }
 };
 

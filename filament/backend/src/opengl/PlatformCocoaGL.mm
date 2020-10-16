@@ -22,6 +22,7 @@
 #include "OpenGLDriverFactory.h"
 #include "gl_headers.h"
 
+#include <utils/compiler.h>
 #include <utils/Panic.h>
 
 #include <OpenGL/OpenGL.h>
@@ -37,6 +38,8 @@ struct PlatformCocoaGLImpl {
     NSOpenGLContext* mGLContext = nullptr;
     NSView* mCurrentView = nullptr;
     std::vector<NSView*> mHeadlessSwapChains;
+    NSRect mPreviousBounds = {};
+    void updateOpenGLContext(NSView *nsView, bool resetView);
 };
 
 PlatformCocoaGL::PlatformCocoaGL()
@@ -51,6 +54,7 @@ Driver* PlatformCocoaGL::createDriver(void* sharedContext) noexcept {
     // NSOpenGLPFAColorSize: when unspecified, a format that matches the screen is preferred
     NSOpenGLPixelFormatAttribute pixelFormatAttributes[] = {
             NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core,
+            NSOpenGLPFADepthSize,    (NSOpenGLPixelFormatAttribute) 24,
             NSOpenGLPFADoubleBuffer, (NSOpenGLPixelFormatAttribute) true,
             NSOpenGLPFAAccelerated,  (NSOpenGLPixelFormatAttribute) true,
             NSOpenGLPFANoRecovery,   (NSOpenGLPixelFormatAttribute) true,
@@ -80,6 +84,15 @@ void PlatformCocoaGL::terminate() noexcept {
 Platform::SwapChain* PlatformCocoaGL::createSwapChain(void* nativewindow, uint64_t& flags) noexcept {
     // Transparent SwapChain is not supported
     flags &= ~backend::SWAP_CHAIN_CONFIG_TRANSPARENT;
+    NSView* nsView = (__bridge NSView*)nativewindow;
+
+    // If the SwapChain is being recreated (e.g. if the underlying surface has been resized),
+    // then we need to force an update to occur in the subsequent makeCurrent, which can be done by
+    // simply resetting the current view. In multi-window situations, this happens automatically.
+    if (pImpl->mCurrentView == nsView) {
+        pImpl->mCurrentView = nullptr;
+    }
+
     return (SwapChain*) nativewindow;
 }
 
@@ -105,27 +118,57 @@ void PlatformCocoaGL::makeCurrent(Platform::SwapChain* drawSwapChain,
     ASSERT_PRECONDITION_NON_FATAL(drawSwapChain == readSwapChain,
             "ContextManagerCocoa does not support using distinct draw/read swap chains.");
     NSView *nsView = (__bridge NSView*) drawSwapChain;
+
+    NSRect currentBounds = [nsView convertRectToBacking:nsView.bounds];
+
+    // Check if the view has been swapped out or resized.
     if (pImpl->mCurrentView != nsView) {
         pImpl->mCurrentView = nsView;
-        // Calling setView could change the viewport and/or scissor box state, but this isn't
-        // accounted for in our OpenGL driver- so we save their state and recall it afterwards.
-        GLint viewport[4];
-        GLint scissor[4];
-        glGetIntegerv(GL_VIEWPORT, viewport);
-        glGetIntegerv(GL_SCISSOR_BOX, scissor);
-
-        [pImpl->mGLContext setView:nsView];
-
-        // Recall viewport and scissor state.
-        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-        glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
+        pImpl->updateOpenGLContext(nsView, true);
+    } else if (!CGRectEqualToRect(currentBounds, pImpl->mPreviousBounds)) {
+        pImpl->updateOpenGLContext(nsView, false);
     }
-    // this is needed only when the view resized. Not sure how to do only when needed.
-    [pImpl->mGLContext update];
+
+    pImpl->mPreviousBounds = currentBounds;
 }
 
 void PlatformCocoaGL::commit(Platform::SwapChain* swapChain) noexcept {
     [pImpl->mGLContext flushBuffer];
+}
+
+bool PlatformCocoaGL::pumpEvents() noexcept {
+    if (![NSThread isMainThread]) {
+        return false;
+    }
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate distantPast]];
+    return true;
+}
+
+void PlatformCocoaGLImpl::updateOpenGLContext(NSView *nsView, bool resetView) {
+    auto& v = mHeadlessSwapChains;
+    const bool headless = std::find(v.begin(), v.end(), nsView) != v.end();
+
+    NSOpenGLContext* glContext = mGLContext;
+
+    // NOTE: This is not documented well (if at all) but NSOpenGLContext requires "setView" and
+    // "update" to be called from the UI thread. This became a hard requirement with the arrival
+    // of macOS 10.15 (Catalina). If we were to call these methods from the GL thread, we would
+    // see EXC_BAD_INSTRUCTION.
+    if (!headless && UTILS_HAS_THREADING) {
+        dispatch_sync(dispatch_get_main_queue(), ^(void) {
+            if (resetView) {
+                [glContext clearDrawable];
+                [glContext setView:nsView];
+            }
+            [glContext update];
+        });
+    } else {
+        if (resetView) {
+            [glContext clearDrawable];
+            [glContext setView:nsView];
+        }
+        [glContext update];
+    }
 }
 
 } // namespace filament

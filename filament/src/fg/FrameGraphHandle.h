@@ -30,12 +30,14 @@ namespace filament {
 
 namespace fg {
 struct PassNode;
-struct RenderTarget;
-struct RenderTargetResource;
+struct ResourceNode;
+class RenderTargetResourceEntry;
 } // namespace fg
 
+class Blackboard;
 class FrameGraph;
 class FrameGraphPassResources;
+class ResourceAllocatorInterface;
 
 // ------------------------------------------------------------------------------------------------
 
@@ -48,27 +50,29 @@ struct FrameGraphTexture {
         uint8_t samples = 0;    // 0=auto, 1=request not multisample, >1 only for NOT SAMPLEABLE
         backend::SamplerType type = backend::SamplerType::SAMPLER_2D;     // texture target type
         backend::TextureFormat format = backend::TextureFormat::RGBA8;    // resource internal format
-        backend::TextureUsage usage = (backend::TextureUsage)0; // don't need to set this one
+        backend::TextureUsage usage = (backend::TextureUsage)0;
     };
 
-    void create(FrameGraph& fg, const char* name, Descriptor const& desc) noexcept;
-    void destroy(FrameGraph& fg) noexcept;
+    void create(ResourceAllocatorInterface& allocator, const char* name, Descriptor const& desc) noexcept;
+    void destroy(ResourceAllocatorInterface& allocator) noexcept;
 
     backend::Handle<backend::HwTexture> texture;
 };
 
 // ------------------------------------------------------------------------------------------------
+
 template<typename T>
 class FrameGraphId;
 
 class FrameGraphHandle {
     template<typename T>
     friend class FrameGraphId;
+    friend class Blackboard;
     friend class FrameGraph;
     friend class FrameGraphPassResources;
     friend struct fg::PassNode;
-    friend struct fg::RenderTarget;
-    friend struct fg::RenderTargetResource;
+    friend struct fg::ResourceNode;
+    friend class fg::RenderTargetResourceEntry;
 
     // private ctor -- this cannot be constructed by users
     FrameGraphHandle() noexcept = default;
@@ -79,7 +83,17 @@ class FrameGraphHandle {
     uint16_t index = UNINITIALIZED;
 
 public:
+    FrameGraphHandle(FrameGraphHandle const& rhs) noexcept = default;
+    FrameGraphHandle(FrameGraphHandle&& rhs) noexcept : index(rhs.index) { rhs.index = UNINITIALIZED; }
+    FrameGraphHandle& operator=(FrameGraphHandle const& rhs) noexcept = default;
+    FrameGraphHandle& operator=(FrameGraphHandle&& rhs) noexcept  {
+        std::swap(rhs.index, index);
+        return *this;
+    }
+
     bool isValid() const noexcept { return index != UNINITIALIZED; }
+
+    void clear() noexcept { index = UNINITIALIZED; }
 
     bool operator < (const FrameGraphHandle& rhs) const noexcept {
         return index < rhs.index;
@@ -108,56 +122,80 @@ public:
     explicit FrameGraphId(FrameGraphHandle r) : FrameGraphHandle(r) { }
 };
 
-using FrameGraphRenderTargetHandle = uint16_t;
+// ------------------------------------------------------------------------------------------------
 
-namespace FrameGraphRenderTarget {
+struct FrameGraphRenderTarget {
+    struct Attachments {
+        struct AttachmentInfo {
+            // auto convert to FrameGraphHandle (allows: handle = desc.attachments.color;)
+            operator FrameGraphId<FrameGraphTexture>() const noexcept { return mHandle; } // NOLINT
 
-struct Attachments {
-    struct AttachmentInfo {
-        // auto convert to FrameGraphHandle (allows: handle = desc.attachments.color;)
-        operator FrameGraphId<FrameGraphTexture>() const noexcept { return mHandle; } // NOLINT
+            AttachmentInfo() noexcept = default;
 
-        AttachmentInfo() noexcept = default;
+            // auto convert from FrameGraphHandle (allows: desc.attachments.color = handle;)
+            AttachmentInfo(FrameGraphId<FrameGraphTexture> handle) noexcept : mHandle(handle) {} // NOLINT
 
-        // auto convert from FrameGraphHandle (allows: desc.attachments.color = handle;)
-        AttachmentInfo(FrameGraphId<FrameGraphTexture> handle) noexcept : mHandle(handle) {} // NOLINT
+            // allows: desc.attachments.color = { handle, level };
+            AttachmentInfo(FrameGraphId<FrameGraphTexture> handle, uint8_t level) noexcept
+                    : mHandle(handle), mLevel(level) {}
 
-        // allows: desc.attachments.color = { handle, level };
-        AttachmentInfo(FrameGraphId<FrameGraphTexture> handle, uint8_t level) noexcept
-                : mHandle(handle), mLevel(level) {}
+            AttachmentInfo(FrameGraphId<FrameGraphTexture> handle, uint8_t level, uint8_t layer) noexcept
+                    : mHandle(handle), mLevel(level), mLayer(layer) {}
 
-        bool isValid() const noexcept { return mHandle.isValid(); }
+            bool isValid() const noexcept { return mHandle.isValid(); }
 
-        FrameGraphId<FrameGraphTexture> getHandle() const noexcept { return mHandle; }
-        uint8_t getLevel() const noexcept { return mLevel; }
+            FrameGraphId<FrameGraphTexture> getHandle() const noexcept { return mHandle; }
+            uint8_t getLevel() const noexcept { return mLevel; }
+            uint8_t getLayer() const noexcept { return mLayer; }
 
-    private:
-        FrameGraphId<FrameGraphTexture> mHandle{};
-        uint8_t mLevel = 0;
-    };
-
-    constexpr Attachments() noexcept : textures{} {}
-    Attachments(AttachmentInfo c, AttachmentInfo d) noexcept : color(c), depth(d) {}
-
-    enum { COLOR = 0, DEPTH = 1 };
-    static constexpr size_t COUNT = 2;
-    union {
-        std::array<AttachmentInfo, COUNT> textures = {};
-        struct {
-            AttachmentInfo color;
-            AttachmentInfo depth;
+        private:
+            FrameGraphId<FrameGraphTexture> mHandle{};
+            uint8_t mLevel = 0;
+            uint8_t mLayer = 0;
         };
+
+        Attachments() noexcept
+                : textures{} {
+        }
+
+        Attachments(AttachmentInfo c) noexcept  // NOLINT(google-explicit-constructor,hicpp-explicit-conversions)
+                : textures{ c } {
+        }
+
+        Attachments(AttachmentInfo c, AttachmentInfo d) noexcept
+                : textures{ c, {}, {}, {}, d } {
+        }
+
+        Attachments(AttachmentInfo c, AttachmentInfo d, AttachmentInfo s) noexcept
+                : textures{ c, {}, {}, {}, d, s } {
+        }
+
+        Attachments(std::array<AttachmentInfo, 4> mrt,
+                AttachmentInfo d, AttachmentInfo s) noexcept
+                : textures{ mrt[0], mrt[1], mrt[2], mrt[3], d, s } {
+        }
+
+        static constexpr size_t COUNT = 6;
+        std::array<AttachmentInfo, COUNT> textures = {};
     };
+
+    struct Descriptor {
+        Attachments attachments;
+        Viewport viewport;
+        math::float4 clearColor{};
+        uint8_t samples = 0; // # of samples (0 = unset, default)
+        backend::TargetBufferFlags clearFlags{};
+    };
+
+    backend::Handle<backend::HwRenderTarget> target;
+    backend::RenderPassParams params;
+
+    // these are empty because we have custom overrides for rendertargets
+    void create(ResourceAllocatorInterface& allocator, const char* name, Descriptor const& desc) noexcept {}
+    void destroy(ResourceAllocatorInterface& allocator) noexcept {}
 };
 
-struct Descriptor {
-    Attachments attachments;
-    Viewport viewport;
-    uint8_t samples = 0; // # of samples (0 = unset, default)
-};
-
-} // namespace FrameGraphRenderTarget
-
+using FrameGraphRenderTargetHandle = FrameGraphId<FrameGraphRenderTarget>;
 
 } // namespace filament
 

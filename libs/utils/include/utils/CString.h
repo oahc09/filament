@@ -19,6 +19,8 @@
 
 // NOTE: this header should not include STL headers
 
+#include <utils/compiler.h>
+
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -68,7 +70,7 @@ template <size_t N>
 using StringLiteral = const char[N];
 
 //! \publicsection
-class StaticString {
+class UTILS_PUBLIC StaticString {
 public:
     using value_type      = char;
     using size_type       = uint32_t;
@@ -186,7 +188,7 @@ private:
 
 // ------------------------------------------------------------------------------------------------
 
-class CString {
+class UTILS_PUBLIC CString {
 public:
     using value_type      = char;
     using size_type       = uint32_t;
@@ -200,8 +202,13 @@ public:
 
     CString() noexcept = default;
 
-    // cstr must be a null terminated string and length == strlen(cstr)
+    // Allocates memory and appends a null. This constructor can be used to hold arbitrary data
+    // inside the string (i.e. it can contain nulls or non-ASCII encodings).
     CString(const char* cstr, size_t length);
+
+    // Allocates memory and copies traditional C string content. Unlike the above constructor, this
+    // does not alllow embedded nulls. This is explicit because this operation is costly.
+    explicit CString(const char* cstr);
 
     template<size_t N>
     explicit CString(StringLiteral<N> const& other) noexcept // NOLINT(google-explicit-constructor)
@@ -216,10 +223,6 @@ public:
         this->swap(rhs);
     }
 
-
-    // this creates a CString from a null-terminated C string, this allocates memory and copies
-    // its content. this is explicit because this operation is costly.
-    explicit CString(const char* cstr);
 
     CString& operator=(const CString& rhs);
 
@@ -236,7 +239,7 @@ public:
 
     void swap(CString& other) noexcept {
         // don't use std::swap(), we don't want an STL dependency in this file
-        auto temp = mCStr;
+        auto *temp = mCStr;
         mCStr = other.mCStr;
         other.mCStr = temp;
     }
@@ -258,6 +261,7 @@ public:
     const_iterator cend() const noexcept { return end(); }
 
     CString& replace(size_type pos, size_type len, const CString& str) noexcept;
+    CString& insert(size_type pos, const CString& str) noexcept { return replace(pos, 0, str); }
 
     const_reference operator[](size_type pos) const noexcept {
         assert(pos < size());

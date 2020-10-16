@@ -65,6 +65,8 @@ public:
     utils::io::sstream& generateCommon(utils::io::sstream& out, ShaderType type) const;
     utils::io::sstream& generateCommonMaterial(utils::io::sstream& out, ShaderType type) const;
 
+    utils::io::sstream& generateFog(utils::io::sstream& out, ShaderType type) const;
+
     // generate the shader's main()
     utils::io::sstream& generateShaderMain(utils::io::sstream& out, ShaderType type) const;
     utils::io::sstream& generatePostProcessMain(utils::io::sstream& out, ShaderType type) const;
@@ -86,6 +88,12 @@ public:
         const filament::AttributeBitset& attributes, filament::Interpolation interpolation) const;
     utils::io::sstream& generatePostProcessInputs(utils::io::sstream& out, ShaderType type) const;
 
+    // generate declarations for custom output variables
+    utils::io::sstream& generateOutput(utils::io::sstream& out, ShaderType type,
+            const utils::CString& name, size_t index,
+            MaterialBuilder::VariableQualifier qualifier,
+            MaterialBuilder::OutputType outputType) const;
+
     // generate no-op shader for depth prepass
     utils::io::sstream& generateDepthShaderMain(utils::io::sstream& out, ShaderType type) const;
 
@@ -101,11 +109,7 @@ public:
     utils::io::sstream& generateMaterialProperty(utils::io::sstream& out,
             MaterialBuilder::Property property, bool isSet) const;
 
-    utils::io::sstream& generateFunction(utils::io::sstream& out,
-            const char* returnType, const char* name, const char* body) const;
-
     utils::io::sstream& generateDefine(utils::io::sstream& out, const char* name, bool value) const;
-    utils::io::sstream& generateDefine(utils::io::sstream& out, const char* name, float value) const;
     utils::io::sstream& generateDefine(utils::io::sstream& out, const char* name, uint32_t value) const;
     utils::io::sstream& generateDefine(utils::io::sstream& out, const char* name, const char* string) const;
     utils::io::sstream& generateIndexedDefine(utils::io::sstream& out, const char* name,
@@ -143,6 +147,9 @@ private:
 
     // return type name of uniform  (e.g.: "vec3", "vec4", "float")
     static char const* getUniformTypeName(filament::UniformInterfaceBlock::Type uniformType) noexcept;
+
+    // return type name of output  (e.g.: "vec3", "vec4", "float")
+    static char const* getOutputTypeName(MaterialBuilder::OutputType type) noexcept;
 
     // return qualifier for the specified interpolation mode
     static char const* getInterpolationQualifier(filament::Interpolation interpolation) noexcept;

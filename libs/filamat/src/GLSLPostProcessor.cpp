@@ -129,13 +129,18 @@ static std::string shrinkString(const std::string& s) {
     return r;
 }
 
-void SpvToMsl(const SpirvBlob* spirv, std::string* outMsl) {
+void SpvToMsl(const SpirvBlob* spirv, std::string* outMsl, const GLSLPostProcessor::Config& config) {
     CompilerMSL mslCompiler(*spirv);
     CompilerGLSL::Options options;
-    options.vertex.fixup_clipspace = true;
     mslCompiler.set_common_options(options);
+
+    const CompilerMSL::Options::Platform platform =
+        config.shaderModel == filament::backend::ShaderModel::GL_ES_30 ?
+            CompilerMSL::Options::Platform::iOS : CompilerMSL::Options::Platform::macOS;
     mslCompiler.set_msl_options(CompilerMSL::Options {
-        .msl_version = CompilerMSL::Options::make_msl_version(1, 1)
+        .platform = platform,
+        .msl_version = CompilerMSL::Options::make_msl_version(1, 1),
+        .ios_use_framebuffer_fetch_subpasses = true
     });
 
     auto executionModel = mslCompiler.get_execution_model();
@@ -162,10 +167,10 @@ void SpvToMsl(const SpirvBlob* spirv, std::string* outMsl) {
     }
 
     *outMsl = mslCompiler.compile();
+    *outMsl = shrinkString(*outMsl);
 }
 
-bool GLSLPostProcessor::process(const std::string& inputShader,
-        filament::backend::ShaderType shaderType, filament::backend::ShaderModel shaderModel,
+bool GLSLPostProcessor::process(const std::string& inputShader, Config const& config,
         std::string* outputGlsl, SpirvBlob* outputSpirv, std::string* outputMsl) {
 
     // If TargetApi is Vulkan, then we need post-processing even if there's no optimization.
@@ -183,7 +188,7 @@ bool GLSLPostProcessor::process(const std::string& inputShader,
     mSpirvOutput = outputSpirv;
     mMslOutput = outputMsl;
 
-    if (shaderType == filament::backend::VERTEX) {
+    if (config.shaderType == filament::backend::VERTEX) {
         mShLang = EShLangVertex;
     } else {
         mShLang = EShLangFragment;
@@ -198,7 +203,7 @@ bool GLSLPostProcessor::process(const std::string& inputShader,
     const char* shaderCString = inputShader.c_str();
     tShader.setStrings(&shaderCString, 1);
 
-    mLangVersion = GLSLTools::glslangVersionFromShaderModel(shaderModel);
+    mLangVersion = GLSLTools::glslangVersionFromShaderModel(config.shaderModel);
     GLSLTools::prepareShaderParser(tShader, mShLang, mLangVersion, mOptimization);
     EShMessages msg = GLSLTools::glslangFlagsFromTargetApi(targetApi);
     bool ok = tShader.parse(&DefaultTBuiltInResource, mLangVersion, false, msg);
@@ -223,7 +228,7 @@ bool GLSLPostProcessor::process(const std::string& inputShader,
                 options.generateDebugInfo = mGenerateDebugInfo;
                 GlslangToSpv(*program.getIntermediate(mShLang), *mSpirvOutput, &options);
                 if (mMslOutput) {
-                    SpvToMsl(mSpirvOutput, mMslOutput);
+                    SpvToMsl(mSpirvOutput, mMslOutput, config);
                 }
             } else {
                 utils::slog.e << "GLSL post-processor invoked with optimization level NONE"
@@ -231,11 +236,11 @@ bool GLSLPostProcessor::process(const std::string& inputShader,
             }
             break;
         case MaterialBuilder::Optimization::PREPROCESSOR:
-            preprocessOptimization(tShader, shaderModel);
+            preprocessOptimization(tShader, config);
             break;
         case MaterialBuilder::Optimization::SIZE:
         case MaterialBuilder::Optimization::PERFORMANCE:
-            fullOptimization(tShader, shaderModel);
+            fullOptimization(tShader, config);
             break;
     }
 
@@ -249,13 +254,13 @@ bool GLSLPostProcessor::process(const std::string& inputShader,
 }
 
 void GLSLPostProcessor::preprocessOptimization(glslang::TShader& tShader,
-        filament::backend::ShaderModel shaderModel) const {
+        GLSLPostProcessor::Config const& config) const {
     using TargetApi = MaterialBuilder::TargetApi;
 
     std::string glsl;
     TShader::ForbidIncluder forbidIncluder;
 
-    int version = GLSLTools::glslangVersionFromShaderModel(shaderModel);
+    int version = GLSLTools::glslangVersionFromShaderModel(config.shaderModel);
     const TargetApi targetApi = mSpirvOutput ? TargetApi::VULKAN : TargetApi::OPENGL;
     EShMessages msg = GLSLTools::glslangFlagsFromTargetApi(targetApi);
     bool ok = tShader.preprocess(&DefaultTBuiltInResource, version, ENoProfile, false, false,
@@ -268,6 +273,11 @@ void GLSLPostProcessor::preprocessOptimization(glslang::TShader& tShader,
     if (mSpirvOutput) {
         TProgram program;
         TShader spirvShader(mShLang);
+
+        // The cleaner must be declared after the TShader/TProgram which are setting the current
+        // pool in the tls
+        GLSLangCleaner cleaner;
+
         const char* shaderCString = glsl.c_str();
         spirvShader.setStrings(&shaderCString, 1);
         GLSLTools::prepareShaderParser(spirvShader, mShLang, mLangVersion, mOptimization);
@@ -286,7 +296,7 @@ void GLSLPostProcessor::preprocessOptimization(glslang::TShader& tShader,
     }
 
     if (mMslOutput) {
-        SpvToMsl(mSpirvOutput, mMslOutput);
+        SpvToMsl(mSpirvOutput, mMslOutput, config);
     }
 
     if (mGlslOutput) {
@@ -295,7 +305,7 @@ void GLSLPostProcessor::preprocessOptimization(glslang::TShader& tShader,
 }
 
 void GLSLPostProcessor::fullOptimization(const TShader& tShader,
-        filament::backend::ShaderModel shaderModel) const {
+        GLSLPostProcessor::Config const& config) const {
     SpirvBlob spirv;
 
     // Compile GLSL to to SPIR-V
@@ -304,42 +314,22 @@ void GLSLPostProcessor::fullOptimization(const TShader& tShader,
     GlslangToSpv(*tShader.getIntermediate(), spirv, &options);
 
     // Run the SPIR-V optimizer
-    Optimizer optimizer(SPV_ENV_UNIVERSAL_1_3);
-    optimizer.SetMessageConsumer([](spv_message_level_t level,
-            const char* source, const spv_position_t& position, const char* message) {
-        utils::slog.e << stringifySpvOptimizerMessage(level, source, position, message)
-                << utils::io::endl;
-    });
-
-    if (mOptimization == MaterialBuilder::Optimization::SIZE) {
-        registerSizePasses(optimizer);
-    } else if (mOptimization == MaterialBuilder::Optimization::PERFORMANCE) {
-        registerPerformancePasses(optimizer);
-    }
-
-    if (!optimizer.Run(spirv.data(), spirv.size(), &spirv)) {
-        utils::slog.e << "SPIR-V optimizer pass failed" << utils::io::endl;
-        return;
-    }
-
-    // Remove dead module-level objects: functions, types, vars
-    spv::spirvbin_t remapper(0);
-    remapper.registerErrorHandler(errorHandler);
-    remapper.remap(spirv, spv::spirvbin_base_t::DCE_ALL);
+    OptimizerPtr optimizer = createOptimizer(mOptimization, config);
+    optimizeSpirv(optimizer, spirv);
 
     if (mSpirvOutput) {
         *mSpirvOutput = spirv;
     }
 
     if (mMslOutput) {
-        SpvToMsl(mSpirvOutput, mMslOutput);
+        SpvToMsl(&spirv, mMslOutput, config);
     }
 
     // Transpile back to GLSL
     if (mGlslOutput) {
         CompilerGLSL::Options glslOptions;
-        glslOptions.es = shaderModel == filament::backend::ShaderModel::GL_ES_30;
-        glslOptions.version = shaderVersionFromModel(shaderModel);
+        glslOptions.es = config.shaderModel == filament::backend::ShaderModel::GL_ES_30;
+        glslOptions.version = shaderVersionFromModel(config.shaderModel);
         glslOptions.enable_420pack_extension = glslOptions.version >= 420;
         glslOptions.fragment.default_float_precision = glslOptions.es ?
                 CompilerGLSL::Options::Precision::Mediump : CompilerGLSL::Options::Precision::Highp;
@@ -349,13 +339,58 @@ void GLSLPostProcessor::fullOptimization(const TShader& tShader,
         CompilerGLSL glslCompiler(move(spirv));
         glslCompiler.set_common_options(glslOptions);
 
+        if (tShader.getStage() == EShLangFragment && glslOptions.es) {
+            for (auto i : config.glsl.subpassInputToColorLocation) {
+                glslCompiler.remap_ext_framebuffer_fetch(i.first, i.second);
+            }
+        }
+
         *mGlslOutput = glslCompiler.compile();
     }
 }
 
-void GLSLPostProcessor::registerPerformancePasses(Optimizer& optimizer) const {
+std::shared_ptr<spvtools::Optimizer> GLSLPostProcessor::createOptimizer(
+        MaterialBuilder::Optimization optimization, Config const& config) {
+    auto optimizer = std::make_shared<spvtools::Optimizer>(SPV_ENV_UNIVERSAL_1_0);
+
+    optimizer->SetMessageConsumer([](spv_message_level_t level,
+            const char* source, const spv_position_t& position, const char* message) {
+        utils::slog.e << stringifySpvOptimizerMessage(level, source, position, message)
+                << utils::io::endl;
+    });
+
+    if (optimization == MaterialBuilder::Optimization::SIZE) {
+        registerSizePasses(*optimizer, config);
+    } else if (optimization == MaterialBuilder::Optimization::PERFORMANCE) {
+        registerPerformancePasses(*optimizer, config);
+    }
+
+    return optimizer;
+}
+
+void GLSLPostProcessor::optimizeSpirv(OptimizerPtr optimizer, SpirvBlob& spirv) const {
+    if (!optimizer->Run(spirv.data(), spirv.size(), &spirv)) {
+        utils::slog.e << "SPIR-V optimizer pass failed" << utils::io::endl;
+        return;
+    }
+
+    // Remove dead module-level objects: functions, types, vars
+    spv::spirvbin_t remapper(0);
+    remapper.registerErrorHandler(errorHandler);
+    remapper.remap(spirv, spv::spirvbin_base_t::DCE_ALL);
+}
+
+void GLSLPostProcessor::registerPerformancePasses(Optimizer& optimizer, Config const& config) {
     optimizer
-            .RegisterPass(CreateMergeReturnPass())
+            .RegisterPass(CreateWrapOpKillPass())
+            .RegisterPass(CreateDeadBranchElimPass());
+
+    if (config.shaderModel != filament::backend::ShaderModel::GL_CORE_41) {
+        // this triggers a segfault with AMD drivers on MacOS
+        optimizer.RegisterPass(CreateMergeReturnPass());
+    }
+
+    optimizer
             .RegisterPass(CreateInlineExhaustivePass())
             .RegisterPass(CreateAggressiveDCEPass())
             .RegisterPass(CreatePrivateToLocalPass())
@@ -389,32 +424,48 @@ void GLSLPostProcessor::registerPerformancePasses(Optimizer& optimizer) const {
             .RegisterPass(CreateSimplificationPass());
 }
 
-void GLSLPostProcessor::registerSizePasses(Optimizer& optimizer) const {
+void GLSLPostProcessor::registerSizePasses(Optimizer& optimizer, Config const& config) {
     optimizer
-            .RegisterPass(CreateMergeReturnPass())
+            .RegisterPass(CreateWrapOpKillPass())
+            .RegisterPass(CreateDeadBranchElimPass());
+
+    if (config.shaderModel != filament::backend::ShaderModel::GL_CORE_41) {
+        // this triggers a segfault with AMD drivers on MacOS
+        optimizer.RegisterPass(CreateMergeReturnPass());
+    }
+
+    optimizer
             .RegisterPass(CreateInlineExhaustivePass())
-            .RegisterPass(CreateAggressiveDCEPass())
+            .RegisterPass(CreateEliminateDeadFunctionsPass())
             .RegisterPass(CreatePrivateToLocalPass())
-            .RegisterPass(CreateScalarReplacementPass())
-            .RegisterPass(CreateLocalAccessChainConvertPass())
-            .RegisterPass(CreateLocalSingleBlockLoadStoreElimPass())
-            .RegisterPass(CreateLocalSingleStoreElimPass())
-            .RegisterPass(CreateAggressiveDCEPass())
-            .RegisterPass(CreateSimplificationPass())
-            .RegisterPass(CreateDeadInsertElimPass())
+            .RegisterPass(CreateScalarReplacementPass(0))
             .RegisterPass(CreateLocalMultiStoreElimPass())
-            .RegisterPass(CreateAggressiveDCEPass())
             .RegisterPass(CreateCCPPass())
+            .RegisterPass(CreateLoopUnrollPass(true))
+            .RegisterPass(CreateDeadBranchElimPass())
+            .RegisterPass(CreateSimplificationPass())
+            .RegisterPass(CreateScalarReplacementPass(0))
+            .RegisterPass(CreateLocalSingleStoreElimPass())
+            .RegisterPass(CreateIfConversionPass())
+            .RegisterPass(CreateSimplificationPass())
             .RegisterPass(CreateAggressiveDCEPass())
             .RegisterPass(CreateDeadBranchElimPass())
-            .RegisterPass(CreateIfConversionPass())
-            .RegisterPass(CreateAggressiveDCEPass())
             .RegisterPass(CreateBlockMergePass())
-            .RegisterPass(CreateSimplificationPass())
+            .RegisterPass(CreateLocalAccessChainConvertPass())
+            .RegisterPass(CreateLocalSingleBlockLoadStoreElimPass())
+            .RegisterPass(CreateAggressiveDCEPass())
+            .RegisterPass(CreateCopyPropagateArraysPass())
+            .RegisterPass(CreateVectorDCEPass())
             .RegisterPass(CreateDeadInsertElimPass())
+            // this breaks UBO layout
+            //.RegisterPass(CreateEliminateDeadMembersPass())
+            .RegisterPass(CreateLocalSingleStoreElimPass())
+            .RegisterPass(CreateBlockMergePass())
+            .RegisterPass(CreateLocalMultiStoreElimPass())
             .RegisterPass(CreateRedundancyEliminationPass())
-            .RegisterPass(CreateCFGCleanupPass())
-            .RegisterPass(CreateAggressiveDCEPass());
+            .RegisterPass(CreateSimplificationPass())
+            .RegisterPass(CreateAggressiveDCEPass())
+            .RegisterPass(CreateCFGCleanupPass());
 }
 
 } // namespace filamat

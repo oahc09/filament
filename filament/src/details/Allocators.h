@@ -19,34 +19,49 @@
 
 #include <utils/Allocator.h>
 
+#ifndef FILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB
+#    define FILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB 2
+#endif
+
+#ifndef FILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB
+#    define FILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB 1
+#endif
+
+#ifndef FILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB
+#    define FILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB 1
+#endif 
+
 namespace filament {
-namespace details {
 
 // per render pass allocations
 // Froxelization needs about 1 MiB. Command buffer needs about 1 MiB.
-static constexpr size_t CONFIG_PER_RENDER_PASS_ARENA_SIZE    = 2 * 1024 * 1024;
+static constexpr size_t CONFIG_PER_RENDER_PASS_ARENA_SIZE  = FILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB * 1024 * 1024;
 
 // size of the high-level draw commands buffer (comes from the per-render pass allocator)
-static constexpr size_t CONFIG_PER_FRAME_COMMANDS_SIZE = 1 * 1024 * 1024;
+static constexpr size_t CONFIG_PER_FRAME_COMMANDS_SIZE     = FILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB * 1024 * 1024;
 
 // size of a command-stream buffer (comes from mmap -- not the per-engine arena)
-static constexpr size_t CONFIG_MIN_COMMAND_BUFFERS_SIZE = 1 * 1024 * 1024;
-static constexpr size_t CONFIG_COMMAND_BUFFERS_SIZE     = 3 * CONFIG_MIN_COMMAND_BUFFERS_SIZE;
+static constexpr size_t CONFIG_MIN_COMMAND_BUFFERS_SIZE    = FILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB * 1024 * 1024;
+static constexpr size_t CONFIG_COMMAND_BUFFERS_SIZE        = 3 * CONFIG_MIN_COMMAND_BUFFERS_SIZE;
 
 #ifndef NDEBUG
 
+// on Debug builds, HeapAllocatorArena needs LockingPolicy::Mutex because it uses a
+// TrackingPolicy, which needs to be synchronized.
 using HeapAllocatorArena = utils::Arena<
         utils::HeapAllocator,
-        utils::LockingPolicy::NoLock,
-        utils::TrackingPolicy::Debug>;
+        utils::LockingPolicy::Mutex,
+        utils::TrackingPolicy::DebugAndHighWatermark>;
 
 using LinearAllocatorArena = utils::Arena<
         utils::LinearAllocator,
         utils::LockingPolicy::NoLock,
-        utils::TrackingPolicy::Debug>;
+        utils::TrackingPolicy::DebugAndHighWatermark>;
 
 #else
 
+// on Release builds, HeapAllocatorArena doesn't need a LockingPolicy because HeapAllocator is
+// intrinsically synchronized as it relies on heap allocations (i.e.: malloc/free)
 using HeapAllocatorArena = utils::Arena<
         utils::HeapAllocator,
         utils::LockingPolicy::NoLock>;
@@ -59,7 +74,6 @@ using LinearAllocatorArena = utils::Arena<
 
 using ArenaScope = utils::ArenaScope<LinearAllocatorArena>;
 
-} // namespace details
 } // namespace filament
 
 #endif // TNT_FILAMENT_DETAILS_ALLOCATORS_H

@@ -32,6 +32,9 @@
 
 #include <assert.h>
 
+#ifndef FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB
+#    define FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB 2
+#endif
 
 namespace filament {
 
@@ -43,6 +46,7 @@ class TargetBufferInfo;
 
 class OpenGLProgram;
 class OpenGLBlitter;
+class TimerQueryInterface;
 
 class OpenGLDriver final : public backend::DriverBase {
     inline explicit OpenGLDriver(backend::OpenGLPlatform* platform) noexcept;
@@ -50,6 +54,13 @@ class OpenGLDriver final : public backend::DriverBase {
 
 public:
     static backend::Driver* create(backend::OpenGLPlatform* platform, void* sharedGLContext) noexcept;
+
+    class DebugMarker {
+        OpenGLDriver& driver;
+    public:
+        DebugMarker(OpenGLDriver& driver, const char* string) noexcept;
+        ~DebugMarker() noexcept;
+    };
 
     // OpenGLDriver specific fields
     struct GLBuffer {
@@ -63,18 +74,20 @@ public:
     struct GLVertexBuffer : public backend::HwVertexBuffer {
         using HwVertexBuffer::HwVertexBuffer;
         struct {
-            std::array<GLuint, backend::MAX_VERTEX_ATTRIBUTE_COUNT> buffers;  // 4 * MAX_VERTEX_ATTRIBUTE_COUNT bytes
+            // 4 * MAX_VERTEX_ATTRIBUTE_COUNT bytes
+            std::array<GLuint, backend::MAX_VERTEX_ATTRIBUTE_COUNT> buffers{};
         } gl;
     };
 
     struct GLIndexBuffer : public backend::HwIndexBuffer {
         using HwIndexBuffer::HwIndexBuffer;
         struct {
-            GLuint buffer;
+            GLuint buffer{};
         } gl;
     };
 
     struct GLUniformBuffer : public backend::HwUniformBuffer {
+        using HwUniformBuffer::HwUniformBuffer;
         GLUniformBuffer(uint32_t capacity, backend::BufferUsage usage) noexcept {
             gl.ubo.capacity = capacity;
             gl.ubo.usage = usage;
@@ -86,8 +99,6 @@ public:
 
     struct GLSamplerGroup : public backend::HwSamplerGroup {
         using HwSamplerGroup::HwSamplerGroup;
-        struct {
-        } gl;
     };
 
     struct GLRenderPrimitive : public backend::HwRenderPrimitive {
@@ -98,10 +109,9 @@ public:
     struct GLTexture : public backend::HwTexture {
         using HwTexture::HwTexture;
         struct {
-            GLuint id;              // texture or renderbuffer id
-            mutable GLuint rb = 0;  // multi-sample sidecar renderbuffer
-            GLenum target;
-            GLenum internalFormat;
+            GLuint id = 0;          // texture or renderbuffer id
+            GLenum target = 0;
+            GLenum internalFormat = 0;
             mutable GLsync fence = nullptr;
 
             // texture parameters go here too
@@ -109,22 +119,28 @@ public:
             int8_t baseLevel = 127;
             int8_t maxLevel = -1;
             uint8_t targetIndex = 0;    // optimization: index corresponding to target
+            bool imported = false;
         } gl;
 
         void* platformPImpl = nullptr;
     };
 
-    class DebugMarker {
-        OpenGLDriver& driver;
-    public:
-        DebugMarker(OpenGLDriver& driver, const char* string) noexcept;
-        ~DebugMarker() noexcept;
+    struct GLTimerQuery : public backend::HwTimerQuery {
+        struct State {
+            std::atomic<uint64_t> elapsed{};
+            std::atomic_bool available{};
+        };
+        struct {
+            GLuint query = 0;
+            std::shared_ptr<State> emulation;
+        } gl;
+        // 0 means not available, otherwise query result in ns.
+        std::atomic<uint64_t> elapsed{};
     };
 
     struct GLStream : public backend::HwStream {
         static constexpr size_t ROUND_ROBIN_TEXTURE_COUNT = 3;      // 3 maximum
         using HwStream::HwStream;
-        bool isNativeStream() const { return gl.externalTextureId == 0; }
         struct Info {
             // storage for the read/write textures below
             backend::Platform::ExternalTexture* ets = nullptr;
@@ -143,8 +159,9 @@ public:
             GLuint fbo = 0;
         } gl;   // 20 bytes
 
+
         /*
-         * The fields below are access from the main application thread
+         * The fields below are accessed from the main application thread
          * (not the GL thread)
          */
         struct {
@@ -155,6 +172,8 @@ public:
             Info infos[ROUND_ROBIN_TEXTURE_COUNT];      // 48 bytes
             int64_t timestamp = 0;
             uint8_t cur = 0;
+            backend::AcquiredImage acquired;
+            backend::AcquiredImage pending;
         } user_thread;
     };
 
@@ -163,10 +182,11 @@ public:
         struct GL {
             struct RenderBuffer {
                 GLTexture* texture = nullptr;
+                mutable GLuint rb = 0;  // multi-sample sidecar renderbuffer
                 uint8_t level = 0; // level when attached to a texture
             };
             // field ordering to optimize size on 64-bits
-            RenderBuffer color;
+            RenderBuffer color[4];
             RenderBuffer depth;
             RenderBuffer stencil;
             GLuint fbo = 0;
@@ -174,11 +194,22 @@ public:
             mutable backend::TargetBufferFlags resolve = backend::TargetBufferFlags::NONE; // attachments in fbo_draw to resolve
             uint8_t samples : 4;
         } gl;
+        backend::TargetBufferFlags targets = {};
+    };
+
+    struct GLSync : public backend::HwSync {
+        using HwSync::HwSync;
+        struct State {
+            std::atomic<GLenum> status{ GL_TIMEOUT_EXPIRED };
+        };
+        struct {
+            GLsync sync;
+        } gl;
+        std::shared_ptr<State> result{ std::make_shared<GLSync::State>() };
     };
 
     OpenGLDriver(OpenGLDriver const&) = delete;
     OpenGLDriver& operator=(OpenGLDriver const&) = delete;
-
 
 private:
     OpenGLContext mContext;
@@ -234,6 +265,9 @@ private:
 
     backend::HandleBase::HandleId allocateHandle(size_t size) noexcept;
 
+    template<typename D, typename ... ARGS>
+    backend::Handle<D> initHandle(ARGS&& ... args) noexcept;
+
     template<typename D, typename B, typename ... ARGS>
     typename std::enable_if<std::is_base_of<B, D>::value, D>::type*
             construct(backend::Handle<B> const& handle, ARGS&& ... args) noexcept;
@@ -255,8 +289,12 @@ private:
             std::is_pointer<Dp>::value &&
             std::is_base_of<B, typename std::remove_pointer<Dp>::type>::value, Dp>::type
     handle_cast(backend::Handle<B>& handle) noexcept {
+        assert(handle);
+        if (!handle) return nullptr; // better to get a NPE than random behavior/corruption
         char* const base = (char *)mHandleArena.getArea().begin();
         size_t offset = handle.getId() << HandleAllocator::MIN_ALIGNMENT_SHIFT;
+        // assert that this handle is even a valid one
+        assert(base + offset + sizeof(typename std::remove_pointer<Dp>::type) <= (char *)mHandleArena.getArea().end());
         return static_cast<Dp>(static_cast<void *>(base + offset));
     }
 
@@ -282,11 +320,10 @@ private:
     void framebufferTexture(backend::TargetBufferInfo const& binfo,
             GLRenderTarget const* rt, GLenum attachment) noexcept;
 
-    void framebufferRenderbuffer(GLTexture const* t,
-            GLRenderTarget const* rt, GLenum attachment) noexcept;
-
     void setRasterStateSlow(backend::RasterState rs) noexcept;
     void setRasterState(backend::RasterState rs) noexcept {
+        mRenderPassColorWrite |= rs.colorWrite;
+        mRenderPassDepthWrite |= rs.depthWrite;
         if (UTILS_UNLIKELY(rs != mRasterState)) {
             setRasterStateSlow(rs);
         }
@@ -322,8 +359,12 @@ private:
     GLuint getSamplerSlow(backend::SamplerParams sp) const noexcept;
 
     inline GLuint getSampler(backend::SamplerParams sp) const noexcept {
-        auto pos = mSamplerMap.find(sp.u);
-        if (UTILS_UNLIKELY(pos == mSamplerMap.end())) {
+        assert(!sp.padding0);
+        assert(!sp.padding1);
+        assert(!sp.padding2);
+        auto& samplerMap = mSamplerMap;
+        auto pos = samplerMap.find(sp.u);
+        if (UTILS_UNLIKELY(pos == samplerMap.end())) {
             return getSamplerSlow(sp);
         }
         return pos->second;
@@ -333,35 +374,24 @@ private:
         return mSamplerBindings;
     }
 
-    GLsizei getAttachments(std::array<GLenum, 3>& attachments,
-            GLRenderTarget const* rt, backend::TargetBufferFlags buffers) const noexcept;
+    static GLsizei getAttachments(std::array<GLenum, 6>& attachments,
+            GLRenderTarget const* rt, backend::TargetBufferFlags buffers) noexcept;
 
     backend::RasterState mRasterState;
 
     // state required to represent the current render pass
     backend::Handle<backend::HwRenderTarget> mRenderPassTarget;
     backend::RenderPassParams mRenderPassParams;
+    GLboolean mRenderPassColorWrite{};
+    GLboolean mRenderPassDepthWrite{};
 
-    // state needed for clearing the viewport "by hand", i.e. with a triangle
-    GLuint mClearVertexShader;
-    GLuint mClearFragmentShader;
-    GLuint mClearProgram;
-    GLint mClearColorLocation;
-    GLint mClearDepthLocation;
-    static const math::float2 mClearTriangle[3];
-    void initClearProgram() noexcept;
-    void terminateClearProgram() noexcept;
-    void clearWithRasterPipe(bool clearColor, math::float4 const& linearColor,
-            bool clearDepth, double depth,
-            bool clearStencil, uint32_t stencil) noexcept;
-    void clearWithGeometryPipe(bool clearColor, math::float4 const& linearColor,
-            bool clearDepth, double depth,
-            bool clearStencil, uint32_t stencil) noexcept;
+    void clearWithRasterPipe(backend::TargetBufferFlags clearFlags,
+            math::float4 const& linearColor, GLfloat depth, GLint stencil) noexcept;
 
     void setViewportScissor(backend::Viewport const& viewportScissor) noexcept;
 
     // sampler buffer binding points (nullptr if not used)
-    std::array<backend::HwSamplerGroup*, backend::Program::SAMPLER_BINDING_COUNT> mSamplerBindings;   // 8 pointers
+    std::array<backend::HwSamplerGroup*, backend::Program::SAMPLER_BINDING_COUNT> mSamplerBindings = {};   // 8 pointers
 
     mutable tsl::robin_map<uint32_t, GLuint> mSamplerMap;
     mutable std::vector<GLTexture*> mExternalStreams;
@@ -373,13 +403,26 @@ private:
     backend::OpenGLPlatform& mPlatform;
 
     OpenGLBlitter* mOpenGLBlitter = nullptr;
-    void updateStream(GLTexture* t, backend::DriverApi* driver) noexcept;
+    void updateStreamTexId(GLTexture* t, backend::DriverApi* driver) noexcept;
+    void updateStreamAcquired(GLTexture* t, backend::DriverApi* driver) noexcept;
     void updateBuffer(GLenum target, GLBuffer* buffer, backend::BufferDescriptor const& p, uint32_t alignment = 16) noexcept;
     void updateTextureLodRange(GLTexture* texture, int8_t targetLevel) noexcept;
 
+    void setExternalTexture(GLTexture* t, void* image);
+
+    // tasks executed on the main thread after the fence signaled
     void whenGpuCommandsComplete(std::function<void()> fn) noexcept;
     void executeGpuCommandsCompleteOps() noexcept;
-    std::vector<std::pair<GLsync, std::function<void(void)>>> mGpuCommandCompleteOps;
+    std::vector<std::pair<GLsync, std::function<void()>>> mGpuCommandCompleteOps;
+
+    // tasks regularly executed on the main thread at until they return true
+    void runEveryNowAndThen(std::function<bool()> fn) noexcept;
+    void executeEveryNowAndThenOps() noexcept;
+    std::vector<std::function<bool()>> mEveryNowAndThenOps;
+
+    // timer query implementation
+    TimerQueryInterface* mTimerQueryImpl = nullptr;
+    bool mFrameTimeSupported = false;
 };
 
 // ------------------------------------------------------------------------------------------------

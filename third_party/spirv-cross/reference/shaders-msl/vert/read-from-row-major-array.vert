@@ -21,11 +21,14 @@ struct main0_in
     float4 a_position [[attribute(0)]];
 };
 
+static inline __attribute__((always_inline))
 float compare_float(thread const float& a, thread const float& b)
 {
-    return float(abs(a - b) < 0.0500000007450580596923828125);
+    float _37 = float(abs(a - b) < 0.0500000007450580596923828125);
+    return _37;
 }
 
+static inline __attribute__((always_inline))
 float compare_vec3(thread const float3& a, thread const float3& b)
 {
     float param = a.x;
@@ -37,6 +40,7 @@ float compare_vec3(thread const float3& a, thread const float3& b)
     return (compare_float(param, param_1) * compare_float(param_2, param_3)) * compare_float(param_4, param_5);
 }
 
+static inline __attribute__((always_inline))
 float compare_mat2x3(thread const float2x3& a, thread const float2x3& b)
 {
     float3 param = a[0];
@@ -46,12 +50,12 @@ float compare_mat2x3(thread const float2x3& a, thread const float2x3& b)
     return compare_vec3(param, param_1) * compare_vec3(param_2, param_3);
 }
 
-vertex main0_out main0(main0_in in [[stage_in]], constant Block& _104 [[buffer(0)]])
+vertex main0_out main0(main0_in in [[stage_in]], constant Block& _106 [[buffer(0)]])
 {
     main0_out out = {};
     out.gl_Position = in.a_position;
     float result = 1.0;
-    float2x3 param = transpose(float3x2(_104.var[0][0][0].xy, _104.var[0][0][1].xy, _104.var[0][0][2].xy));
+    float2x3 param = transpose(float3x2(_106.var[0][0][0].xy, _106.var[0][0][1].xy, _106.var[0][0][2].xy));
     float2x3 param_1 = float2x3(float3(2.0, 6.0, -6.0), float3(0.0, 5.0, 5.0));
     result *= compare_mat2x3(param, param_1);
     out.v_vtxResult = result;

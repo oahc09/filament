@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(filament-java)
 
-if (NOT ENABLE_JAVA)
+if (NOT FILAMENT_ENABLE_JAVA)
     return()
 endif()
 
@@ -30,9 +30,9 @@ set(TARGET filamat-jni)
 
 include_directories(${JNI_INCLUDE_DIRS})
 
-set(CXX_STANDARD "-std=c++14")
+set(CXX_STANDARD "-std=c++17")
 if (WIN32)
-    set(CXX_STANDARD "/std:c++14")
+    set(CXX_STANDARD "/std:c++17")
 endif()
 
 set(FILAMAT_DIR ../../android/filamat-android)
@@ -76,6 +76,6 @@ set(JAVA_SOURCE_FILES
 
 add_jar(${TARGET}
         SOURCES ${JAVA_SOURCE_FILES}
-        INCLUDE_JARS ../lib/support-annotations.jar)
+        INCLUDE_JARS ../lib/annotation-1.0.0.jar)
 
 install_jar(${TARGET} lib)

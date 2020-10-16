@@ -353,6 +353,98 @@ static bool processCulling(MaterialBuilder& builder, const JsonishValue& value) 
     return true;
 }
 
+static bool processOutput(MaterialBuilder& builder, const JsonishObject& jsonObject) noexcept {
+
+    const JsonishValue* nameValue = jsonObject.getValue("name");
+    if (!nameValue) {
+        std::cerr << "outputs: entry without 'name' key." << std::endl;
+        return false;
+    }
+    if (nameValue->getType() != JsonishValue::STRING) {
+        std::cerr << "outputs: name value must be STRING." << std::endl;
+        return false;
+    }
+
+    const JsonishValue* targetValue = jsonObject.getValue("target");
+    if (targetValue) {
+        if (targetValue->getType() != JsonishValue::STRING) {
+            std::cerr << "outputs: target must be a STRING." << std::endl;
+            return false;
+        }
+
+        auto targetString = targetValue->toJsonString();
+        if (!Enums::isValid<OutputTarget>(targetString->getString())) {
+            return logEnumIssue("target", *targetString, Enums::map<OutputTarget>());
+        }
+    }
+
+    const JsonishValue* typeValue = jsonObject.getValue("type");
+    if (typeValue) {
+        if (typeValue->getType() != JsonishValue::STRING) {
+            std::cerr << "outputs: type must be a STRING." << std::endl;
+            return false;
+        }
+
+        auto typeString = typeValue->toJsonString();
+        if (!Enums::isValid<OutputType>(typeString->getString())) {
+            return logEnumIssue("type", *typeString, Enums::map<OutputType>());
+        }
+    }
+
+    const JsonishValue* qualifierValue = jsonObject.getValue("qualifier");
+    if (qualifierValue) {
+        if (qualifierValue->getType() != JsonishValue::STRING) {
+            std::cerr << "outputs: qualifier must be a STRING." << std::endl;
+            return false;
+        }
+
+        auto qualifierString = qualifierValue->toJsonString();
+        if (!Enums::isValid<OutputQualifier>(qualifierString->getString())) {
+            return logEnumIssue("qualifier", *qualifierString, Enums::map<OutputQualifier>());
+        }
+    }
+
+    const char* name = nameValue->toJsonString()->getString().c_str();
+
+    OutputTarget target = OutputTarget::COLOR;
+    if (targetValue) {
+        target = Enums::toEnum<OutputTarget>(targetValue->toJsonString()->getString());
+    }
+
+    OutputType type = OutputType::FLOAT4;
+    if (target == OutputTarget::DEPTH) {
+        // The default type for depth targets is float.
+        type = OutputType::FLOAT;
+    }
+    if (typeValue) {
+        type = Enums::toEnum<OutputType>(typeValue->toJsonString()->getString());
+    }
+
+    OutputQualifier qualifier = OutputQualifier::OUT;
+    if (qualifierValue) {
+        qualifier = Enums::toEnum<OutputQualifier>(qualifierValue->toJsonString()->getString());
+    }
+
+    builder.output(qualifier, target, type, name);
+
+    return true;
+}
+
+static bool processOutputs(MaterialBuilder& builder, const JsonishValue& v) {
+    auto jsonArray = v.toJsonArray();
+
+    bool ok = true;
+    for (auto value : jsonArray->getElements()) {
+        if (value->getType() == JsonishValue::Type::OBJECT) {
+            ok |= processOutput(builder, *value->toJsonObject());
+            continue;
+        }
+        std::cerr << "outputs must be an array of OBJECTs." << std::endl;
+        return false;
+    }
+    return ok;
+}
+
 static bool processColorWrite(MaterialBuilder& builder, const JsonishValue& value) {
     builder.colorWrite(value.toJsonBool()->getBool());
     return true;
@@ -428,8 +520,28 @@ static bool processMultiBounceAO(MaterialBuilder& builder, const JsonishValue& v
     return true;
 }
 
+static bool processFramebufferFetch(MaterialBuilder& builder, const JsonishValue& value) {
+    if (value.toJsonBool()->getBool()) {
+        builder.enableFramebufferFetch();
+    }
+    return true;
+}
+
 static bool processSpecularAmbientOcclusion(MaterialBuilder& builder, const JsonishValue& value) {
-    builder.specularAmbientOcclusion(value.toJsonBool()->getBool());
+    static const std::unordered_map<std::string, MaterialBuilder::SpecularAmbientOcclusion> strToEnum {
+            { "none",        MaterialBuilder::SpecularAmbientOcclusion::NONE },
+            { "simple",      MaterialBuilder::SpecularAmbientOcclusion::SIMPLE },
+            { "bentNormals", MaterialBuilder::SpecularAmbientOcclusion::BENT_NORMALS },
+            // Backward compatibility
+            { "false",       MaterialBuilder::SpecularAmbientOcclusion::NONE },
+            { "true",        MaterialBuilder::SpecularAmbientOcclusion::SIMPLE },
+    };
+    auto jsonString = value.toJsonString();
+    if (!isStringValidEnum(strToEnum, jsonString->getString())) {
+        return logEnumIssue("specularAO", *jsonString, strToEnum);
+    }
+
+    builder.specularAmbientOcclusion(stringToEnum(strToEnum, jsonString->getString()));
     return true;
 }
 
@@ -464,6 +576,35 @@ static bool processDomain(MaterialBuilder& builder, const JsonishValue& value) {
     return true;
 }
 
+static bool processRefractionMode(MaterialBuilder& builder, const JsonishValue& value) {
+    static const std::unordered_map<std::string, MaterialBuilder::RefractionMode> strToEnum{
+            { "none",        MaterialBuilder::RefractionMode::NONE },
+            { "cubemap",     MaterialBuilder::RefractionMode::CUBEMAP },
+            { "screenspace", MaterialBuilder::RefractionMode::SCREEN_SPACE },
+    };
+    auto jsonString = value.toJsonString();
+    if (!isStringValidEnum(strToEnum, jsonString->getString())) {
+        return logEnumIssue("refraction", *jsonString, strToEnum);
+    }
+
+    builder.refractionMode(stringToEnum(strToEnum, jsonString->getString()));
+    return true;
+}
+
+static bool processRefractionType(MaterialBuilder& builder, const JsonishValue& value) {
+    static const std::unordered_map<std::string, MaterialBuilder::RefractionType> strToEnum {
+            { "solid", MaterialBuilder::RefractionType::SOLID },
+            { "thin",  MaterialBuilder::RefractionType::THIN },
+    };
+    auto jsonString = value.toJsonString();
+    if (!isStringValidEnum(strToEnum, jsonString->getString())) {
+        return logEnumIssue("refractionType", *jsonString, strToEnum);
+    }
+
+    builder.refractionType(stringToEnum(strToEnum, jsonString->getString()));
+    return true;
+}
+
 static bool processVariantFilter(MaterialBuilder& builder, const JsonishValue& value) {
     // We avoid using an initializer list for this particular map to avoid build errors that are
     // due to static initialization ordering.
@@ -473,6 +614,7 @@ static bool processVariantFilter(MaterialBuilder& builder, const JsonishValue& v
         strToEnum["dynamicLighting"] = filament::Variant::DYNAMIC_LIGHTING;
         strToEnum["shadowReceiver"] = filament::Variant::SHADOW_RECEIVER;
         strToEnum["skinning"] = filament::Variant::SKINNING_OR_MORPHING;
+        strToEnum["vsm"] = filament::Variant::VSM;
         return strToEnum;
     }();
     uint8_t variantFilter = 0;
@@ -527,8 +669,12 @@ ParametersProcessor::ParametersProcessor() {
     mParameters["clearCoatIorChange"]            = { &processClearCoatIorChange, Type::BOOL };
     mParameters["flipUV"]                        = { &processFlipUV, Type::BOOL };
     mParameters["multiBounceAmbientOcclusion"]   = { &processMultiBounceAO, Type::BOOL };
-    mParameters["specularAmbientOcclusion"]      = { &processSpecularAmbientOcclusion, Type::BOOL };
+    mParameters["specularAmbientOcclusion"]      = { &processSpecularAmbientOcclusion, Type::STRING };
     mParameters["domain"]                        = { &processDomain, Type::STRING };
+    mParameters["refractionMode"]                = { &processRefractionMode, Type::STRING };
+    mParameters["refractionType"]                = { &processRefractionType, Type::STRING };
+    mParameters["framebufferFetch"]              = { &processFramebufferFetch, Type::BOOL };
+    mParameters["outputs"]                       = { &processOutputs, Type::ARRAY };
 }
 
 bool ParametersProcessor::process(MaterialBuilder& builder, const JsonishObject& jsonObject) {

@@ -18,6 +18,8 @@
 
 #include <filament/Scene.h>
 
+#include <utils/Entity.h>
+
 using namespace filament;
 using namespace utils;
 
@@ -58,6 +60,15 @@ Java_com_google_android_filament_Scene_nRemove(JNIEnv *env, jclass type, jlong n
         jint entity) {
     Scene* scene = (Scene*) nativeScene;
     scene->remove((Entity&) entity);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_Scene_nRemoveEntities(JNIEnv *env, jclass type, jlong nativeScene,
+        jintArray entities) {
+    Scene* scene = (Scene*) nativeScene;
+    Entity* nativeEntities = (Entity*) env->GetIntArrayElements(entities, nullptr);
+    scene->removeEntities(nativeEntities, env->GetArrayLength(entities));
+    env->ReleaseIntArrayElements(entities, (jint*) nativeEntities, JNI_ABORT);
 }
 
 extern "C" JNIEXPORT jint JNICALL

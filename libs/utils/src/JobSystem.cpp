@@ -66,15 +66,13 @@
 
 namespace utils {
 
-UTILS_DEFINE_TLS(JobSystem::ThreadState *) JobSystem::sThreadState(nullptr);
-
 void JobSystem::setThreadName(const char* name) noexcept {
 #if defined(__linux__)
     pthread_setname_np(pthread_self(), name);
 #elif defined(__APPLE__)
     pthread_setname_np(name);
 #else
-// TODO: implement setting thread name on WIN32 
+// TODO: implement setting thread name on WIN32
 #endif
 }
 
@@ -121,8 +119,8 @@ JobSystem::JobSystem(const size_t userThreadCount, const size_t adoptableThreads
             // since we assumed HT, always round-up to an even number of cores (to play it safe)
             hwThreads = (hwThreads + 1) / 2;
         }
-        // make sure we have at least one h/w thread (could be an assert instead)
-        hwThreads = std::max(0, hwThreads);
+        // make sure we have at least one thread in the thread pool
+        hwThreads = std::max(2, hwThreads);
         // one of the thread will be the user thread
         threadPoolCount = hwThreads - 1;
     }
@@ -190,11 +188,6 @@ void JobSystem::decRef(Job const* job) noexcept {
     }
 }
 
-JobSystem* JobSystem::getJobSystem() noexcept {
-    ThreadState* const state = sThreadState;
-    return state ? state->js : nullptr;
-}
-
 void JobSystem::requestExit() noexcept {
     mExitRequested.store(true);
     { std::lock_guard<Mutex> lock(mWaiterLock); }
@@ -230,9 +223,10 @@ void JobSystem::wake() noexcept {
 }
 
 inline JobSystem::ThreadState& JobSystem::getState() noexcept {
-    // check we're not using a thread not owned by the thread pool
-    assert(sThreadState);
-    return *sThreadState;
+    std::lock_guard<utils::SpinLock> lock(mThreadMapLock);
+    auto iter = mThreadMap.find(std::this_thread::get_id());
+    ASSERT_PRECONDITION(iter != mThreadMap.end(), "This thread has not been adopted.");
+    return *iter->second;
 }
 
 JobSystem::Job* JobSystem::allocateJob() noexcept {
@@ -307,8 +301,11 @@ void JobSystem::loop(ThreadState* state) noexcept {
     // to core. On Android, it looks like the affinity needs to be reset from time to time.
     setThreadAffinityById(state->id);
 
-    // record our work queue to thread-local storage
-    sThreadState = state;
+    // record our work queue
+    mThreadMapLock.lock();
+    bool inserted = mThreadMap.emplace(std::this_thread::get_id(), state).second;
+    mThreadMapLock.unlock();
+    ASSERT_PRECONDITION(inserted, "This thread is already in a loop.");
 
     // run our main loop...
     do {
@@ -358,7 +355,7 @@ void JobSystem::finish(Job* job) noexcept {
 
 
 JobSystem::Job* JobSystem::create(JobSystem::Job* parent, JobFunc func) noexcept {
-    parent = (parent == nullptr) ? mMasterJob : parent;
+    parent = (parent == nullptr) ? mRootJob : parent;
     Job* const job = allocateJob();
     if (UTILS_LIKELY(job)) {
         size_t index = 0x7FFF;
@@ -461,8 +458,8 @@ void JobSystem::waitAndRelease(Job*& job) noexcept {
         }
     } while (!hasJobCompleted(job) && !exitRequested());
 
-    if (job == mMasterJob) {
-        mMasterJob = nullptr;
+    if (job == mRootJob) {
+        mRootJob = nullptr;
     }
 
     release(job);
@@ -474,7 +471,13 @@ void JobSystem::runAndWait(JobSystem::Job*& job) noexcept {
 }
 
 void JobSystem::adopt() {
-    ThreadState* const state = sThreadState;
+    const auto tid = std::this_thread::get_id();
+
+    std::unique_lock<utils::SpinLock> lock(mThreadMapLock);
+    auto iter = mThreadMap.find(tid);
+    ThreadState* const state = iter ==  mThreadMap.end() ? nullptr : iter->second;
+    lock.unlock();
+
     if (state) {
         // we're already part of a JobSystem, do nothing.
         ASSERT_PRECONDITION(this == state->js,
@@ -497,14 +500,18 @@ void JobSystem::adopt() {
     // however, it's not a problem since mThreadState is pre-initialized and valid
     // (e.g.: the queue is empty).
 
-    sThreadState = &mThreadStates[index];
+    lock.lock();
+    mThreadMap[tid] = &mThreadStates[index];
 }
 
 void JobSystem::emancipate() {
-    ThreadState* const state = sThreadState;
+    const auto tid = std::this_thread::get_id();
+    std::lock_guard<utils::SpinLock> lock(mThreadMapLock);
+    auto iter = mThreadMap.find(tid);
+    ThreadState* const state = iter ==  mThreadMap.end() ? nullptr : iter->second;
     ASSERT_PRECONDITION(state, "this thread is not an adopted thread");
     ASSERT_PRECONDITION(state->js == this, "this thread is not adopted by us");
-    sThreadState = nullptr;
+    mThreadMap.erase(iter);
 }
 
 io::ostream& operator<<(io::ostream& out, JobSystem const& js) {

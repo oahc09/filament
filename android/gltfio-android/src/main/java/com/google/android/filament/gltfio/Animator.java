@@ -16,14 +16,15 @@
 
 package com.google.android.filament.gltfio;
 
-import android.support.annotation.IntRange;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import java.nio.Buffer;
 
 /**
  * Updates matrices according to glTF <code>animation</code> and <code>skin</code> definitions.
  *
- * <p>Animator can be used for two things:
+ * <p>Animator is owned by <code>FilamentAsset</code> and can be used for two things:
  * <ul>
  * <li>Updating matrices in <code>TransformManager</code> components according to glTF <code>animation</code> definitions.</li>
  * <li>Updating bone matrices in <code>RenderableManager</code> components according to glTF <code>skin</code> definitions.</li>
@@ -51,25 +52,25 @@ public class Animator {
      * @see #getAnimationCount
      */
     public void applyAnimation(@IntRange(from = 0) int animationIndex, float time) {
-        nApplyAnimation(mNativeObject, animationIndex, time);
+        nApplyAnimation(getNativeObject(), animationIndex, time);
     }
 
     /**
-     * Computes root-to-node transforms for all bone nodes, then passes
-     * the results into {@see RenderableManager#setBones}.
+     * Computes root-to-node transforms for all bone nodes, then passes the results into
+     * {@link com.google.android.filament.RenderableManager#setBonesAsMatrices(int, Buffer, int, int)}.
      * Uses <code>TransformManager</code> and <code>RenderableManager</code>.
      *
      * <p>NOTE: this operation is independent of <code>animation</code>.</p>
      */
     public void updateBoneMatrices() {
-        nUpdateBoneMatrices(mNativeObject);
+        nUpdateBoneMatrices(getNativeObject());
     }
 
     /**
      * Returns the number of <code>animation</code> definitions in the glTF asset.
      */
     public int getAnimationCount() {
-        return nGetAnimationCount(mNativeObject);
+        return nGetAnimationCount(getNativeObject());
     }
 
     /**
@@ -80,7 +81,7 @@ public class Animator {
      * @see #getAnimationCount
      * */
     public float getAnimationDuration(@IntRange(from = 0) int animationIndex) {
-        return nGetAnimationDuration(mNativeObject, animationIndex);
+        return nGetAnimationDuration(getNativeObject(), animationIndex);
     }
 
     /**
@@ -92,7 +93,18 @@ public class Animator {
      * @see #getAnimationCount
      */
     public String getAnimationName(@IntRange(from = 0) int animationIndex) {
-        return nGetAnimationName(mNativeObject, animationIndex);
+        return nGetAnimationName(getNativeObject(), animationIndex);
+    }
+
+    long getNativeObject() {
+        if (mNativeObject == 0) {
+            throw new IllegalStateException("Using Animator on destroyed asset");
+        }
+        return mNativeObject;
+    }
+
+    void clearNativeObject() {
+        mNativeObject = 0;
     }
 
     private static native void nApplyAnimation(long nativeAnimator, int index, float time);

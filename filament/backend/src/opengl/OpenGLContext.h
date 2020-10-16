@@ -32,6 +32,7 @@ public:
     static constexpr const size_t MAX_TEXTURE_UNIT_COUNT = 16;   // All mobile GPUs as of 2016
     static constexpr const size_t MAX_BUFFER_BINDINGS = 32;
     typedef math::details::TVec4<GLint> vec4gli;
+    typedef math::details::TVec2<GLclampf> vec2glf;
 
     struct RenderPrimitive {
         GLuint vao = 0;
@@ -85,13 +86,13 @@ public:
     inline void depthMask(GLboolean flag) noexcept;
     inline void depthFunc(GLenum func) noexcept;
     inline void polygonOffset(GLfloat factor, GLfloat units) noexcept;
+    inline void beginQuery(GLenum target, GLuint query) noexcept;
+    inline void endQuery(GLenum target) noexcept;
+    inline GLuint getQuery(GLenum target) noexcept;
 
     inline void setScissor(GLint left, GLint bottom, GLsizei width, GLsizei height) noexcept;
     inline void viewport(GLint left, GLint bottom, GLsizei width, GLsizei height) noexcept;
-
-    inline void setClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) noexcept;
-    inline void setClearDepth(GLfloat depth) noexcept;
-    inline void setClearStencil(GLint stencil) noexcept;
+    inline void depthRange(GLclampf near, GLclampf far) noexcept;
 
     void deleteBuffers(GLsizei n, const GLuint* buffers, GLenum target) noexcept;
     void deleteVextexArrays(GLsizei n, const GLuint* arrays) noexcept;
@@ -121,7 +122,13 @@ public:
         bool EXT_color_buffer_float = false;
         bool APPLE_color_buffer_packed_float = false;
         bool EXT_multisampled_render_to_texture = false;
+        bool EXT_multisampled_render_to_texture2 = false;
         bool KHR_debug = false;
+        bool EXT_texture_sRGB = false;
+        bool EXT_texture_compression_s3tc_srgb = false;
+        bool EXT_disjoint_timer_query = false;
+        bool EXT_shader_framebuffer_fetch = false;
+        bool EXT_clip_control = false;
     } ext;
 
     struct {
@@ -133,10 +140,6 @@ public:
         // in the VAO state.
         bool vao_doesnt_store_element_array_buffer_binding = false;
 
-        // On some drivers, glClear() cancels glInvalidateFrameBuffer() which results
-        // in extra GPU memory loads.
-        bool clears_hurt_performance = false;
-
         // Some drivers have gl state issues when drawing from shared contexts
         bool disable_shared_context_draws = false;
 
@@ -147,6 +150,13 @@ public:
         // Some web browsers seem to immediately clear the default framebuffer when calling
         // glInvalidateFramebuffer with WebGL 2.0
         bool disable_invalidate_framebuffer = false;
+
+        // Some drivers declare GL_EXT_texture_filter_anisotropic but don't support
+        // calling glSamplerParameter() with GL_TEXTURE_MAX_ANISOTROPY_EXT
+        bool disable_texture_filter_anisotropic = false;
+
+        // Some drivers don't implement timer queries correctly
+        bool dont_use_timer_query = false;
     } bugs;
 
     // state getters -- as needed.
@@ -193,7 +203,7 @@ private:
         struct PolygonOffset {
             GLfloat factor = 0;
             GLfloat units = 0;
-            bool operator != (PolygonOffset const& rhs) noexcept {
+            bool operator != (PolygonOffset const& rhs) const noexcept {
                 return factor != rhs.factor || units != rhs.units;
             }
         } polygonOffset;
@@ -219,7 +229,7 @@ private:
                 GLuint sampler = 0;
                 struct {
                     GLuint texture_id = 0;
-                } targets[5];
+                } targets[6];  // this must match getIndexForTextureTarget()
             } units[MAX_TEXTURE_UNIT_COUNT];
         } textures;
 
@@ -240,13 +250,12 @@ private:
         struct {
             vec4gli scissor { 0 };
             vec4gli viewport { 0 };
+            vec2glf depthRange { 0.0f, 1.0f };
         } window;
 
         struct {
-            math::float4 color = {};
-            GLfloat depth = 1.0f;
-            GLint stencil = 0;
-        } clears;
+            GLuint timer = -1u;
+        } queries;
     } state;
 
     RenderPrimitive mDefaultVAO;
@@ -267,12 +276,14 @@ private:
 // ------------------------------------------------------------------------------------------------
 
 constexpr size_t OpenGLContext::getIndexForTextureTarget(GLuint target) noexcept {
+    // this must match state.textures[].targets[]
     switch (target) {
         case GL_TEXTURE_2D:             return 0;
         case GL_TEXTURE_2D_ARRAY:       return 1;
         case GL_TEXTURE_CUBE_MAP:       return 2;
         case GL_TEXTURE_2D_MULTISAMPLE: return 3;
         case GL_TEXTURE_EXTERNAL_OES:   return 4;
+        case GL_TEXTURE_3D:             return 5;
         default:                        return 0;
     }
 }
@@ -292,10 +303,10 @@ constexpr size_t OpenGLContext::getIndexForCap(GLenum cap) noexcept { //NOLINT
         case GL_PRIMITIVE_RESTART_FIXED_INDEX:  index =  9; break;
         case GL_RASTERIZER_DISCARD:             index = 10; break;
 #ifdef GL_ARB_seamless_cube_map
-            case GL_TEXTURE_CUBE_MAP_SEAMLESS:      index = 11; break;
+        case GL_TEXTURE_CUBE_MAP_SEAMLESS:      index = 11; break;
 #endif
 #if GL41_HEADERS
-            case GL_PROGRAM_POINT_SIZE:             index = 12; break;
+        case GL_PROGRAM_POINT_SIZE:             index = 12; break;
 #endif
         default: index = 13; break; // should never happen
     }
@@ -352,22 +363,10 @@ void OpenGLContext::viewport(GLint left, GLint bottom, GLsizei width, GLsizei he
     });
 }
 
-void OpenGLContext::setClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) noexcept {
-    math::float4 color(r, g, b, a);
-    update_state(state.clears.color, color, [&]() {
-        glClearColor(r, g, b, a);
-    });
-}
-
-void OpenGLContext::setClearDepth(GLfloat depth) noexcept {
-    update_state(state.clears.depth, depth, [&]() {
-        glClearDepthf(depth);
-    });
-}
-
-void OpenGLContext::setClearStencil(GLint stencil) noexcept {
-    update_state(state.clears.stencil, stencil, [&]() {
-        glClearStencil(stencil);
+void OpenGLContext::depthRange(GLclampf near, GLclampf far) noexcept {
+    vec2glf depthRange(near, far);
+    update_state(state.window.depthRange, depthRange, [&]() {
+        glDepthRangef(near, far);
     });
 }
 
@@ -389,7 +388,7 @@ void OpenGLContext::bindVertexArray(RenderPrimitive const* p) noexcept {
 void OpenGLContext::bindBufferRange(GLenum target, GLuint index, GLuint buffer,
         GLintptr offset, GLsizeiptr size) noexcept {
     size_t targetIndex = getIndexForBufferTarget(target);
-    assert(targetIndex <= 1); // sanity check
+    assert(targetIndex <= 1); // validity check
 
     // this ALSO sets the generic binding
     if (   state.buffers.targets[targetIndex].buffers[index].name != buffer
@@ -551,6 +550,40 @@ void OpenGLContext::polygonOffset(GLfloat factor, GLfloat units) noexcept {
     });
 }
 
+void OpenGLContext::beginQuery(GLenum target, GLuint query) noexcept {
+    switch (target) {
+        case GL_TIME_ELAPSED:
+            if (state.queries.timer != -1u) {
+                // this is an error
+                break;
+            }
+            state.queries.timer = query;
+            break;
+        default:
+            return;
+    }
+    glBeginQuery(target, query);
+}
+
+void OpenGLContext::endQuery(GLenum target) noexcept {
+    switch (target) {
+        case GL_TIME_ELAPSED:
+            state.queries.timer = -1u;
+            break;
+        default:
+            return;
+    }
+    glEndQuery(target);
+}
+
+GLuint OpenGLContext::getQuery(GLenum target) noexcept {
+    switch (target) {
+        case GL_TIME_ELAPSED:
+            return state.queries.timer;
+        default:
+            return 0;
+    }
+}
 } // namesapce filament
 
 #endif //TNT_FILAMENT_BACKEND_OPENGLCONTEXT_H

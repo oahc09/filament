@@ -28,13 +28,7 @@
 
 #include <filament/MaterialEnums.h>
 
-#include <math/vec4.h>
-
 namespace test {
-
-struct UniformBuffer {
-    filament::math::float4 color;
-};
 
 class BackendTest : public ::testing::Test {
 public:
@@ -59,6 +53,7 @@ protected:
     static void fullViewport(filament::backend::Viewport& viewport);
 
     filament::backend::DriverApi& getDriverApi() { return commandStream; }
+    filament::backend::Driver& getDriver() { return *driver; }
 
 private:
 

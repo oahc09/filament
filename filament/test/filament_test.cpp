@@ -34,6 +34,7 @@
 
 #include <private/filament/UniformInterfaceBlock.h>
 #include <private/filament/UibGenerator.h>
+#include <private/backend/BackendUtils.h>
 
 #include "details/Allocators.h"
 #include "details/Material.h"
@@ -166,7 +167,7 @@ TEST(FilamentTest, SkinningMath) {
 
     std::default_random_engine generator(82828); // NOLINT
     std::uniform_real_distribution<float> distribution(-4, 4);
-    std::uniform_real_distribution<float> dangle(-2.0 * F_PI, 2.0 * F_PI);
+    std::uniform_real_distribution<float> dangle(-f::TAU, f::TAU);
     auto rand_gen = std::bind(distribution, generator);
 
     for (size_t i = 0; i < 100; ++i) {
@@ -179,7 +180,7 @@ TEST(FilamentTest, SkinningMath) {
 }
 
 TEST(FilamentTest, TransformManager) {
-    filament::details::FTransformManager tcm;
+    filament::FTransformManager tcm;
     EntityManager& em = EntityManager::get();
     std::array<Entity, 3> entities;
     em.create(entities.size(), entities.data());
@@ -235,13 +236,13 @@ TEST(FilamentTest, TransformManager) {
     tcm.create(entities[2]);
     EXPECT_TRUE(tcm.hasComponent(entities[2]));
     TransformManager::Instance newParent = tcm.getInstance(entities[2]);
-    EXPECT_TRUE(bool(newParent));
+    ASSERT_LT(child, newParent);
 
     // test reparenting
     tcm.setParent(child, newParent);
 
-    // make sure child/parent are out of order
-    ASSERT_LT(child, newParent);
+    // make sure child/parent are out of order (i.e.: setParent() doesn't invalidate instances)
+    EXPECT_LT(tcm.getInstance(entities[1]), tcm.getInstance(entities[2]));
 
     // local transaction reorders parent/child
     tcm.openLocalTransformTransaction();
@@ -624,7 +625,6 @@ TEST(FilamentTest, ColorConversion) {
 
 TEST(FilamentTest, FroxelData) {
     using namespace filament;
-    using namespace filament::details;
 
     FEngine* engine = FEngine::create();
 
@@ -688,8 +688,8 @@ TEST(FilamentTest, FroxelData) {
     LightManager::Instance instance = engine->getLightManager().getInstance(e);
 
     FScene::LightSoa lights;
-    lights.push_back({}, {}, {}, {}, {});   // first one is always skipped
-    lights.push_back(float4{ 0, 0, -5, 1 }, {}, instance, 1, {});
+    lights.push_back({}, {}, {}, {}, {}, {});   // first one is always skipped
+    lights.push_back(float4{ 0, 0, -5, 1 }, {}, instance, 1, {}, {});
 
     {
         froxelData.froxelizeLights(*engine, {}, lights);
@@ -698,9 +698,8 @@ TEST(FilamentTest, FroxelData) {
         // light straddles the "light near" plane
         size_t pointCount = 0;
         for (const auto& entry : froxelBuffer) {
-            EXPECT_LE(entry.pointLightCount, 1);
-            EXPECT_EQ(entry.spotLightCount, 0);
-            pointCount += entry.pointLightCount;
+            EXPECT_LE(entry.count, 1);
+            pointCount += entry.count;
         }
         EXPECT_GT(pointCount, 0);
     }
@@ -717,9 +716,8 @@ TEST(FilamentTest, FroxelData) {
         auto const& recordBuffer = froxelData.getRecordBufferUser();
         size_t pointCount = 0;
         for (const auto& entry : froxelBuffer) {
-            EXPECT_LE(entry.pointLightCount, 1);
-            EXPECT_EQ(entry.spotLightCount, 0);
-            pointCount += entry.pointLightCount;
+            EXPECT_LE(entry.count, 1);
+            pointCount += entry.count;
         }
         EXPECT_GT(pointCount, 0);
     }
@@ -730,7 +728,6 @@ TEST(FilamentTest, FroxelData) {
 }
 
 TEST(FilamentTest, Bones) {
-    using namespace ::filament::details;
 
     struct Shader {
         static mat3f normal(PerRenderableUibBone const& bone) noexcept {
@@ -860,6 +857,51 @@ TEST(FilamentTest, Bones) {
     for (size_t i = 0; i < 100; ++i) {
         float3 p(rand_gen(), rand_gen(), rand_gen());
         Test::check(m, p);
+    }
+}
+
+TEST(FilamentTest, GoogleLineDirective) {
+    {
+        char s[512] = "#line 10 \"foobar\"";
+        EXPECT_FALSE(filament::backend::requestsGoogleLineDirectivesExtension(&s[0], strlen(s)));
+    }
+    {
+        char s[512] =
+            "#extension GL_GOOGLE_cpp_style_line_directive : enable\n"
+            "#line 10 \"foobar\"";
+        EXPECT_TRUE(filament::backend::requestsGoogleLineDirectivesExtension(&s[0], strlen(s)));
+    }
+    {
+        char s[512] =
+            "#extension GL_GOOGLE_cpp_style_line_directive : enable\n"
+            "#line 10 \"foobar\"";
+        filament::backend::removeGoogleLineDirectives(&s[0], strlen(s));
+        EXPECT_STREQ(s,
+            "#extension GL_GOOGLE_cpp_style_line_directive : enable\n"
+            "#line 10         ");
+    }
+    {
+        char s[512] =
+            "#extension GL_GOOGLE_cpp_style_line_directive : enable\n"
+            "#line 10 \"foobar\"\n"
+            "#line 100 \"foobar\" abc\n"
+            "//\n"
+            "#line 20\n"
+            "#line 20 \"foo\n"
+            "// valid quote: \"\n"
+            "#line 100 \"baz\"\n"
+            "#line";
+        filament::backend::removeGoogleLineDirectives(&s[0], strlen(s));
+        EXPECT_STREQ(s,
+            "#extension GL_GOOGLE_cpp_style_line_directive : enable\n"
+            "#line 10         \n"
+            "#line 100             \n"
+            "//\n"
+            "#line 20\n"
+            "#line 20     \n"
+            "// valid quote: \"\n"
+            "#line 100      \n"
+            "#line");
     }
 }
 

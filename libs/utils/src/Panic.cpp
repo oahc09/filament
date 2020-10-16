@@ -122,7 +122,7 @@ void TPanic<T>::buildMessage() {
 #else
     type = "Panic";
 #endif
-    m_msg = panicString(std::move(type), m_function, m_line, m_file, m_reason.c_str());
+    m_msg = panicString(type, m_function, m_line, m_file, m_reason.c_str());
 }
 
 UTILS_ALWAYS_INLINE
@@ -166,8 +166,8 @@ void logAndPanic(char const* function, char const* file, int line, const char* f
 
 // -----------------------------------------------------------------------------------------------
 
-template class TPanic<PreconditionPanic>;
-template class TPanic<PostconditionPanic>;
-template class TPanic<ArithmeticPanic>;
+template class UTILS_PUBLIC TPanic<PreconditionPanic>;
+template class UTILS_PUBLIC TPanic<PostconditionPanic>;
+template class UTILS_PUBLIC TPanic<ArithmeticPanic>;
 
 } // namespace utils

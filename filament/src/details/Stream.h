@@ -26,7 +26,6 @@
 #include <utils/compiler.h>
 
 namespace filament {
-namespace details {
 
 class FEngine;
 
@@ -37,14 +36,14 @@ public:
 
     backend::Handle<backend::HwStream> getHandle() const noexcept { return mStreamHandle; }
 
+    void setAcquiredImage(void* image, Callback callback, void* userdata) noexcept;
+
     void setDimensions(uint32_t width, uint32_t height) noexcept;
 
     void readPixels(uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
             backend::PixelBufferDescriptor&& buffer) noexcept;
 
-    bool isNativeStream() const noexcept { return mNativeStream != nullptr; }
-
-    bool isExternalTextureId() const noexcept { return !isNativeStream(); }
+    StreamType getStreamType() const noexcept { return mStreamType; }
 
     uint32_t getWidth() const noexcept { return mWidth; }
 
@@ -54,6 +53,7 @@ public:
 
 private:
     FEngine& mEngine;
+    const StreamType mStreamType;
     backend::Handle<backend::HwStream> mStreamHandle;
     void* mNativeStream = nullptr;
     intptr_t mExternalTextureId;
@@ -63,7 +63,6 @@ private:
 
 FILAMENT_UPCAST(Stream)
 
-} // namespace details
 } // namespace filament
 
 #endif // TNT_FILAMENT_DETAILS_STREAM_H

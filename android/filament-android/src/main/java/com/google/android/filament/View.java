@@ -16,11 +16,15 @@
 
 package com.google.android.filament;
 
-import android.support.annotation.IntRange;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.annotation.Size;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.Size;
 
+import java.util.EnumSet;
+
+import static com.google.android.filament.Asserts.assertFloat3In;
+import static com.google.android.filament.Asserts.assertFloat4In;
 import static com.google.android.filament.Colors.LinearColor;
 
 /**
@@ -62,9 +66,31 @@ public class View {
     private Viewport mViewport = new Viewport(0, 0, 0, 0);
     private DynamicResolutionOptions mDynamicResolution;
     private RenderQuality mRenderQuality;
-    private DepthPrepass mDepthPrepass = DepthPrepass.DEFAULT;
     private AmbientOcclusionOptions mAmbientOcclusionOptions;
+    private BloomOptions mBloomOptions;
+    private FogOptions mFogOptions;
     private RenderTarget mRenderTarget;
+    private BlendMode mBlendMode;
+    private DepthOfFieldOptions mDepthOfFieldOptions;
+    private VignetteOptions mVignetteOptions;
+    private ColorGrading mColorGrading;
+    private TemporalAntiAliasingOptions mTemporalAntiAliasingOptions;
+    private VsmShadowOptions mVsmShadowOptions;
+
+    /**
+     * Generic quality level.
+     */
+    public enum QualityLevel {
+        LOW,
+        MEDIUM,
+        HIGH,
+        ULTRA
+    }
+
+    public enum BlendMode {
+        OPAQUE,
+        TRANSLUCENT
+    }
 
     /**
      * Dynamic resolution can be used to either reach a desired target frame rate by lowering the
@@ -95,21 +121,6 @@ public class View {
         public boolean homogeneousScaling = false;
 
         /**
-         * Desired frame time in milliseconds.
-         */
-        public float targetFrameTimeMilli = 1000.0f / 60.0f;
-
-        /**
-         * Additional headroom for the GPU as a ratio of the targetFrameTime.
-         */
-        public float headRoomRatio = 0.0f;
-
-        /**
-         * Rate at which the scale will change to reach the target frame rate.
-         */
-        public float scaleRate = 0.125f;
-
-        /**
          * The minimum scale in X and Y this View should use.
          */
         public float minScale = 0.5f;
@@ -120,14 +131,16 @@ public class View {
         public float maxScale = 1.0f;
 
         /**
-         * History size. higher values, tend to filter more (clamped to 30).
+         * Upscaling quality. LOW: 1 bilinear tap, MEDIUM: 4 bilinear taps, HIGH: 9 bilinear taps.
+         * If minScale needs to be very low, it might help to use MEDIUM or HIGH here.
+         * The default upscaling quality is set to LOW.
          */
-        public int history = 9;
+        @NonNull
+        public QualityLevel quality = QualityLevel.LOW;
     }
 
     /**
-     * Options for Ambient Occlusion
-     * @see #setAmbientOcclusion
+     * Options for screen space Ambient Occlusion
      */
     public static class AmbientOcclusionOptions {
         /**
@@ -138,35 +151,340 @@ public class View {
         /**
          * Self-occlusion bias in meters. Use to avoid self-occlusion. Between 0 and a few mm.
          */
-        public float bias = 0.005f;
+        public float bias = 0.0005f;
 
         /**
-         * Controls ambient occlusion's contrast. Between 0 (linear) and 1 (squared)
+         * Controls ambient occlusion's contrast. Must be positive. Default is 1.
+         * Good values are between 0.5 and 3.
          */
-        public float power = 0.0f;
+        public float power = 1.0f;
 
         /**
-         * How each dimension of the AO buffer is scaled. Must be positive and <= 1.
+         * How each dimension of the AO buffer is scaled. Must be either 0.5 or 1.0.
          */
         public float resolution = 0.5f;
+
+        /**
+         * Strength of the Ambient Occlusion effect. Must be positive.
+         */
+        public float intensity = 1.0f;
+
+        /**
+         * The quality setting controls the number of samples used for evaluating Ambient
+         * occlusion. The default is QualityLevel.LOW which is sufficient for most mobile
+         * applications.
+         */
+        @NonNull
+        public QualityLevel quality = QualityLevel.LOW;
+
+        /**
+         * The lowPassFilter setting controls the quality of the low pass filter applied to
+         * AO estimation. The default is QualityLevel.MEDIUM which is sufficient for most mobile
+         * applications. QualityLevel.LOW disables the filter entirely.
+         */
+        @NonNull
+        public QualityLevel lowPassFilter = QualityLevel.MEDIUM;
+
+        /**
+         * The upsampling setting controls the quality of the ambient occlusion buffer upsampling.
+         * The default is QualityLevel.LOW and uses bilinear filtering, a value of
+         * QualityLevel.HIGH or more enables a better bilateral filter.
+         */
+        @NonNull
+        public QualityLevel upsampling = QualityLevel.LOW;
+
+        /**
+         * enable or disable screen space ambient occlusion
+         */
+        public boolean enabled = false;
+
+        /**
+         * Minimal angle to consider in radian. This is used to reduce the creases that can
+         * appear due to insufficiently tessellated geometry.
+         * For e.g. a good values to try could be around 0.2.
+         */
+        public float minHorizonAngleRad = 0.0f;
+
+
+       /**
+        * Full cone angle in radian, between 0 and pi/2. This affects the softness of the shadows,
+        * as well as how far they are cast. A smaller angle yields to sharper and shorter shadows.
+        * The default angle is about 60 degrees.
+        */
+       public float ssctLightConeRad = 1.0f;
+
+       /**
+        * Distance from where tracing starts.
+        * This affects how far shadows are cast.
+        */
+       public float ssctStartTraceDistance = 0.01f;
+
+       /**
+        * Maximum contact distance with the cone. Intersections between the traced cone and
+        * geometry samller than this distance are ignored.
+        */
+       public float ssctContactDistanceMax = 1.0f;
+
+       /**
+        * Intensity of the shadows.
+        */
+       public float ssctIntensity = 0.8f;
+
+       /**
+        * Light direction.
+        */
+       @NonNull @Size(min = 3)
+       public float[] ssctLightDirection = { 0, -1, 0 };
+
+       /**
+        * Depth bias in world units (mitigate self shadowing)
+        */
+       public float ssctDepthBias = 0.01f;
+
+       /**
+        * Depth slope bias (mitigate self shadowing)
+        */
+       public float ssctDepthSlopeBias = 0.01f;
+
+       /**
+        * Tracing sample count, between 1 and 255. This affects the quality as well as the
+        * distance of the shadows.
+        */
+       public int ssctSampleCount = 4;
+
+       /**
+        * Numbers of rays to trace, between 1 and 255. This affects the noise of the shadows.
+        * Performance degrades quickly with this value.
+        */
+       public int ssctRayCount = 1;
+
+       /**
+        * Enables or disables SSCT.
+        */
+       public boolean ssctEnabled = false;
     }
 
     /**
-     * Sets the quality of the HDR color buffer.
-     *
-     * <p>
-     * A quality of <code>HIGH</code> or <code>ULTRA</code> means using an RGB16F or RGBA16F color
-     * buffer. This means colors in the LDR range (0..1) have 10 bit precision. A quality of
-     * <code>LOW</code> or <code>MEDIUM</code> means using an R11G11B10F opaque color buffer or an
-     * RGBA16F transparent color buffer. With R11G11B10F colors in the LDR range have a precision of
-     * either 6 bits (red and green channels) or 5 bits (blue channel).
-     * </p>
+     * Options for Temporal Anti-aliasing (TAA)
+     * @see View#setTemporalAntiAliasingOptions()
      */
-    public enum QualityLevel {
-        LOW,
-        MEDIUM,
-        HIGH,
-        ULTRA
+    public static class TemporalAntiAliasingOptions {
+        /** reconstruction filter width typically between 0 (sharper, aliased) and 1 (smoother) */
+        public float filterWidth = 1.0f;
+
+        /** history feedback, between 0 (maximum temporal AA) and 1 (no temporal AA). */
+        public float feedback = 0.04f;
+
+        /** enables or disables temporal anti-aliasing */
+        public boolean enabled = false;
+    };
+
+    /**
+     * Options for controlling the Bloom effect
+     *
+     * enabled:     Enable or disable the bloom post-processing effect. Disabled by default.
+     * levels:      Number of successive blurs to achieve the blur effect, the minimum is 3 and the
+     *              maximum is 12. This value together with resolution influences the spread of the
+     *              blur effect. This value can be silently reduced to accommodate the original
+     *              image size.
+     * resolution:  Resolution of bloom's minor axis. The minimum value is 2^levels and the
+     *              the maximum is lower of the original resolution and 4096. This parameter is
+     *              silently clamped to the minimum and maximum.
+     *              It is highly recommended that this value be smaller than the target resolution
+     *              after dynamic resolution is applied (horizontally and vertically).
+     * strength:    how much of the bloom is added to the original image. Between 0 and 1.
+     * blendMode:   Whether the bloom effect is purely additive (false) or mixed with the original
+     *              image (true).
+     * anamorphism: Bloom's aspect ratio (x/y), for artistic purposes.
+     * threshold:   When enabled, a threshold at 1.0 is applied on the source image, this is
+     *              useful for artistic reasons and is usually needed when a dirt texture is used.
+     * dirt:        A dirt/scratch/smudges texture (that can be RGB), which gets added to the
+     *              bloom effect. Smudges are visible where bloom occurs. Threshold must be
+     *              enabled for the dirt effect to work properly.
+     * dirtStrength: Strength of the dirt texture.
+     *
+     * @see View#setBloomOptions
+     */
+    public static class BloomOptions {
+
+        public enum BlendingMode {
+            ADD,
+            INTERPOLATE
+        }
+
+        /**
+         * User provided dirt texture
+         */
+        @Nullable
+        public Texture dirt = null;
+
+        /**
+         * strength of the dirt texture
+         */
+        public float dirtStrength = 0.2f;
+
+        /**
+         * Strength of the bloom effect, between 0.0 and 1.0
+         */
+        public float strength = 0.10f;
+
+        /**
+         * Resolution of minor axis (2^levels to 4096)
+         */
+        public int resolution = 360;
+
+        /**
+         * Bloom x/y aspect-ratio (1/32 to 32)
+         */
+        public float anamorphism = 1.0f;
+
+        /**
+         * Number of blur levels (3 to 12)
+         */
+        public int levels = 6;
+
+        /**
+         * How the bloom effect is applied
+         */
+        public BlendingMode blendingMode = BlendingMode.ADD;
+
+        /**
+         * Whether to threshold the source
+         */
+        public boolean threshold = true;
+
+        /**
+         * enable or disable bloom
+         */
+        public boolean enabled = false;
+
+        /**
+         * limit highlights to this value before bloom. Use +inf for no limiting.
+         * minimum value is 10.0.
+         */
+        public float highlight = 1000.0f;
+    }
+
+    /**
+     * Options to control fog in the scene
+     *
+     * @see View#setFogOptions
+     */
+    public static class FogOptions {
+        /**
+         * distance in world units from the camera where the fog starts ( >= 0.0 )
+         */
+        public float distance = 0.0f;
+
+        /**
+         * fog's maximum opacity between 0 and 1
+         */
+        public float maximumOpacity = 1.0f;
+
+        /**
+         * fog's floor in world units
+         */
+        public float height = 0.0f;
+
+        /**
+         * how fast fog dissipates with altitude
+         */
+        public float heightFalloff = 1.0f;
+
+        /**
+         * Fog's color as a linear RGB color.
+         */
+        @NonNull
+        @Size(min = 3)
+        public float[] color = { 0.5f, 0.5f, 0.5f };
+
+        /**
+         * fog's density at altitude given by 'height'
+         */
+        public float density = 0.1f;
+
+        /**
+         * distance in world units from the camera where in-scattering starts
+         */
+        public float inScatteringStart = 0.0f;
+
+        /**
+         * size of in-scattering (>0 to activate). Good values are >> 1 (e.g. ~10 - 100)
+         */
+        public float inScatteringSize = -1.0f;
+
+        /**
+         * fog color will be modulated by the IBL color in the view direction
+         */
+        public boolean fogColorFromIbl = false;
+
+        /**
+         * enable or disable fog
+         */
+        public boolean enabled = false;
+    }
+
+    /**
+     * Options to control Depth of Field (DoF) effect in the scene
+     *
+     * @see View#setDepthOfFieldOptions
+     */
+    public static class DepthOfFieldOptions {
+
+        /** focus distance in world units */
+        public float focusDistance = 10.0f;
+
+        /**
+         * circle of confusion scale factor (amount of blur)
+         *
+         * <p>cocScale can be used to set the depth of field blur independently from the camera
+         * aperture, e.g. for artistic reasons. This can be achieved by setting:</p>
+         * <code>
+         *      cocScale = cameraAperture / desiredDoFAperture
+         * </code>
+         *
+         */
+        public float cocScale = 1.0f;
+
+        /** maximum aperture diameter in meters (zero to disable bokeh rotation) */
+        public float maxApertureDiameter = 0.01f;
+
+        /** enable or disable Depth of field effect */
+        public boolean enabled = false;
+    };
+
+    /**
+     * Options to control the vignetting effect.
+     */
+    public static class VignetteOptions {
+        /**
+         * High values restrict the vignette closer to the corners, between 0 and 1.
+         */
+        public float midPoint = 0.5f;
+
+        /**
+         * Controls the shape of the vignette, from a rounded rectangle (0.0), to an oval (0.5),
+         * to a circle (1.0). The value must be between 0 and 1.
+         */
+        public float roundness = 0.5f;
+
+        /**
+         * Softening amount of the vignette effect, between 0 and 1.
+         */
+        public float feather = 0.5f;
+
+        /**
+         * Color of the vignette effect as a linear RGBA color. The alpha channel is currently
+         * ignored.
+         */
+        @NonNull
+        @Size(min = 4)
+        public float[] color = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+        /**
+         * Enables or disables the vignette effect.
+         */
+        public boolean enabled = false;
     }
 
     /**
@@ -181,14 +499,24 @@ public class View {
      * @see #getRenderQuality
      */
     public static class RenderQuality {
+        /**
+          * <p>
+          * A quality of <code>HIGH</code> or <code>ULTRA</code> means using an RGB16F or RGBA16F color
+          * buffer. This means colors in the LDR range (0..1) have 10 bit precision. A quality of
+          * <code>LOW</code> or <code>MEDIUM</code> means using an R11G11B10F opaque color buffer or an
+          * RGBA16F transparent color buffer. With R11G11B10F colors in the LDR range have a precision of
+          * either 6 bits (red and green channels) or 5 bits (blue channel).
+          * </p>
+          */
         public QualityLevel hdrColorBuffer = QualityLevel.HIGH;
     }
 
     /**
      * List of available ambient occlusion techniques.
-     *
+     * @deprecated use setAmbientOcclusionOptions instead
      * @see #setAmbientOcclusion
-    */
+     */
+    @Deprecated
     public enum AmbientOcclusion {
         NONE,
         SSAO
@@ -214,7 +542,10 @@ public class View {
 
     /**
      * List of available tone-mapping operators
+     *
+     * @deprecated Use ColorGrading instead
      */
+    @Deprecated
     public enum ToneMapping {
         /**
          * Equivalent to disabling tone-mapping.
@@ -235,18 +566,104 @@ public class View {
         TEMPORAL
     }
 
-    /** @see #setDepthPrepass */
-    public enum DepthPrepass {
-        DEFAULT(-1),
-        DISABLED(0),
-        ENABLED(1);
+    /**
+     * List of available shadow mapping techniques.
+     *
+     * @see #setShadowType
+     */
+    public enum ShadowType {
+        /**
+         * Percentage-closer filtered shadows (default).
+         */
+        PCF,
 
-        final int value;
+        /**
+         * Variance shadows.
+         */
+        VSM
+    }
 
-        DepthPrepass(int value) {
-            this.value = value;
+    /**
+     * View-level options for VSM shadowing.
+     *
+     * @see View#setVsmShadowOptions
+     */
+    public static class VsmShadowOptions {
+        /**
+         * Sets the number of anisotropic samples to use when sampling a VSM shadow map. If greater
+         * than 0, mipmaps will automatically be generated each frame for all lights.
+         *
+         * <p>
+         * The number of anisotropic samples = 2 ^ vsmAnisotropy.
+         * </p>
+         *
+         * <strong>Warning: This API is still experimental and subject to change.</strong>
+         */
+        public int anisotropy = 0;
+    }
+
+    /**
+     * Used to select buffers.
+     */
+    public enum TargetBufferFlags {
+        /**
+         * Color 0 buffer selected.
+         */
+        COLOR0(0x1),
+        /**
+         * Color 1 buffer selected.
+         */
+        COLOR1(0x2),
+        /**
+         * Color 2 buffer selected.
+         */
+        COLOR2(0x4),
+        /**
+         * Color 3 buffer selected.
+         */
+        COLOR3(0x8),
+        /**
+         * Depth buffer selected.
+         */
+        DEPTH(0x10),
+        /**
+         * Stencil buffer selected.
+         */
+        STENCIL(0x20);
+
+        /*
+         * No buffer selected
+         */
+        public static EnumSet<TargetBufferFlags> NONE = EnumSet.noneOf(TargetBufferFlags.class);
+
+        /*
+         * All color buffers selected
+         */
+        public static EnumSet<TargetBufferFlags> ALL_COLOR =
+                EnumSet.of(COLOR0, COLOR1, COLOR2, COLOR3);
+        /**
+         * Depth and stencil buffer selected.
+         */
+        public static EnumSet<TargetBufferFlags> DEPTH_STENCIL = EnumSet.of(DEPTH, STENCIL);
+        /**
+         * All buffers are selected.
+         */
+        public static EnumSet<TargetBufferFlags> ALL = EnumSet.range(COLOR0, STENCIL);
+
+        private int mFlags;
+
+        TargetBufferFlags(int flags) {
+            mFlags = flags;
         }
-    };
+
+        static int flags(EnumSet<TargetBufferFlags> flags) {
+            int result = 0;
+            for (TargetBufferFlags flag : flags) {
+                result |= flag.mFlags;
+            }
+            return result;
+        }
+    }
 
     View(long nativeView) {
         mNativeObject = nativeView;
@@ -362,39 +779,23 @@ public class View {
     }
 
     /**
-     * Sets the color used to clear the Viewport when rendering this View.
+     * Sets the blending mode used to draw the view into the SwapChain.
      *
-     * <p>This is ignored if a {@link Skybox} is present or if clearing has been disabled
-     * via {@link #setClearTargets}. Defaults to black.</p>
-     *
-     * @see #getClearColor
+     * @param blendMode either {@link BlendMode#OPAQUE} or {@link BlendMode#TRANSLUCENT}
+     * @see #getBlendMode
      */
-    public void setClearColor(
-            @LinearColor float r, @LinearColor float g, @LinearColor float b, float a) {
-        nSetClearColor(getNativeObject(), r, g, b, a);
+    public void setBlendMode(BlendMode blendMode) {
+        mBlendMode = blendMode;
+        nSetBlendMode(getNativeObject(), blendMode.ordinal());
     }
 
     /**
-     * Returns the View clear color in a provided 4-tuple.
      *
-     * @return A reference to the passed-in array.
-     *
-     * @see #setClearColor
+     * @return blending mode set by setBlendMode
+     * @see #setBlendMode
      */
-    @NonNull @Size(min = 4)
-    public float[] getClearColor(@NonNull @Size(min = 4) float[] out) {
-        out = Asserts.assertFloat4(out);
-        nGetClearColor(getNativeObject(), out);
-        return out;
-    }
-
-    /**
-     * Sets which targets to clear (default: true, true, false)
-     *
-     * @see #setClearColor
-     */
-    public void setClearTargets(boolean color, boolean depth, boolean stencil) {
-        nSetClearTargets(getNativeObject(), color, depth, stencil);
+    public BlendMode getBlendMode() {
+        return mBlendMode;
     }
 
     /**
@@ -425,8 +826,41 @@ public class View {
      * @see RenderableManager.Builder#receiveShadows
      * @see RenderableManager.Builder#castShadows
      */
+    public void setShadowingEnabled(boolean enabled) {
+        nSetShadowingEnabled(getNativeObject(), enabled);
+    }
+
+    /**
+     * Enables or disables shadow mapping. Enabled by default.
+     *
+     * @deprecated Use {@link #setShadowingEnabled}
+     */
+    @Deprecated
     public void setShadowsEnabled(boolean enabled) {
-        nSetShadowsEnabled(getNativeObject(), enabled);
+        setShadowingEnabled(enabled);
+    }
+
+    /**
+     * @return whether shadowing is enabled
+     */
+    boolean isShadowingEnabled() {
+        return nIsShadowingEnabled(getNativeObject());
+    }
+
+    /**
+     * Enables or disables screen space refraction. Enabled by default.
+     *
+     * @param enabled true enables screen space refraction, false disables it.
+     */
+    public void setScreenSpaceRefractionEnabled(boolean enabled) {
+        nSetScreenSpaceRefractionEnabled(getNativeObject(), enabled);
+    }
+
+    /**
+     * @return whether screen space refraction is enabled
+     */
+    boolean isScreenSpaceRefractionEnabled() {
+        return nIsScreenSpaceRefractionEnabled(getNativeObject());
     }
 
     /**
@@ -435,6 +869,11 @@ public class View {
      * <p>
      * By default, the view's associated render target is null, which corresponds to the
      * SwapChain associated with the engine.
+     * </p>
+     *
+     * <p>
+     * A view with a custom render target cannot rely on Renderer.ClearOptions, which only applies
+     * to the SwapChain. Such view can use a Skybox instead.
      * </p>
      *
      * @param target render target associated with view, or null for the swap chain
@@ -509,21 +948,73 @@ public class View {
     }
 
     /**
+     * Enables or disable temporal anti-aliasing (TAA). Disabled by default.
+     *
+     * @param options temporal anti-aliasing options
+     */
+    public void setTemporalAntiAliasingOptions(@NonNull TemporalAntiAliasingOptions options) {
+        mTemporalAntiAliasingOptions = options;
+        nSetTemporalAntiAliasingOptions(getNativeObject(),
+                options.feedback, options.filterWidth, options.enabled);
+    }
+
+    /**
+     * Returns temporal anti-aliasing options.
+     *
+     * @return temporal anti-aliasing options
+     */
+    @NonNull
+    public TemporalAntiAliasingOptions getTemporalAntiAliasingOptions() {
+        if (mTemporalAntiAliasingOptions == null) {
+            mTemporalAntiAliasingOptions = new TemporalAntiAliasingOptions();
+        }
+        return mTemporalAntiAliasingOptions;
+    }
+
+    /**
      * Enables or disables tone-mapping in the post-processing stage. Enabled by default.
      *
      * @param type Tone-mapping function.
+     *
+     * @deprecated Use {@link #setColorGrading(com.google.android.filament.ColorGrading)}
      */
+    @Deprecated
     public void setToneMapping(@NonNull ToneMapping type) {
-        nSetToneMapping(getNativeObject(), type.ordinal());
     }
 
     /**
      * Returns the tone-mapping function.
      * @return tone-mapping function.
+     *
+     * @deprecated Use {@link #getColorGrading()}. This always returns {@link ToneMapping#ACES}
      */
+    @Deprecated
     @NonNull
     public ToneMapping getToneMapping() {
-        return ToneMapping.values()[nGetToneMapping(getNativeObject())];
+        return ToneMapping.ACES;
+    }
+
+    /**
+     * Sets this View's color grading transforms.
+     *
+     * @param colorGrading Associate the specified {@link ColorGrading} to this view. A ColorGrading
+     *                     can be associated to several View instances. Can be null to dissociate
+     *                     the currently set ColorGrading from this View. Doing so will revert to
+     *                     the use of the default color grading transforms.
+     */
+    public void setColorGrading(@Nullable ColorGrading colorGrading) {
+        nSetColorGrading(getNativeObject(),
+                colorGrading != null ? colorGrading.getNativeObject() : 0);
+        mColorGrading = colorGrading;
+    }
+
+    /**
+     * Returns the {@link ColorGrading} associated to this view.
+     *
+     * @return A {@link ColorGrading} or null if the default {@link ColorGrading} is in use
+     */
+    public ColorGrading getColorGrading() {
+        return mColorGrading;
     }
 
     /**
@@ -565,12 +1056,9 @@ public class View {
         nSetDynamicResolutionOptions(getNativeObject(),
                 options.enabled,
                 options.homogeneousScaling,
-                options.targetFrameTimeMilli,
-                options.headRoomRatio,
-                options.scaleRate,
                 options.minScale,
                 options.maxScale,
-                options.history);
+                options.quality.ordinal());
     }
 
     /**
@@ -605,46 +1093,6 @@ public class View {
             mRenderQuality = new RenderQuality();
         }
         return mRenderQuality;
-    }
-
-    /**
-     * Checks if this view is rendered with a depth-only prepass.
-     *
-     * @return the value set by {@link #setDepthPrepass}.
-     */
-    @NonNull
-    public DepthPrepass getDepthPrepass() {
-        return mDepthPrepass;
-    }
-
-    /**
-     * Sets whether this view is rendered with or without a depth pre-pass.
-     *
-     * <p>
-     * By default, the system picks the most appropriate strategy for your platform; this method
-     * lets you override that strategy.
-     * </p>
-     *
-     * <p>
-     * When the depth pre-pass is enabled, the renderer will first draw all objects in the
-     * depth buffer from front to back, and then draw the objects again but sorted to minimize
-     * state changes. With the depth pre-pass disabled, objects are drawn only once, but it may
-     * result in more state changes or more overdraw.
-     * </p>
-     *
-     * <p>
-     * The best strategy may depend on the scene and/or GPU.
-     * </p>
-     *
-     * <ul>
-     * <li>DepthPrepass::DEFAULT uses the most appropriate strategy</li>
-     * <li>DepthPrepass::DISABLED disables the depth pre-pass</li>
-     * <li>DepthPrepass::ENABLE enables the depth pre-pass</li>
-     * </ul>
-     */
-    public void setDepthPrepass(@NonNull DepthPrepass depthPrepass) {
-        mDepthPrepass = depthPrepass;
-        nSetDepthPrepass(getNativeObject(), depthPrepass.value);
     }
 
     /**
@@ -736,19 +1184,71 @@ public class View {
     }
 
     /**
-     * Activates or deactivates ambient occlusion.
+     * Sets the shadow mapping technique this View uses.
      *
+     * The ShadowType affects all the shadows seen within the View.
+     *
+     * <p>
+     * {@link ShadowType#VSM} imposes a restriction on marking renderables as only shadow receivers
+     * (but not casters). To ensure correct shadowing with VSM, all shadow participant renderables
+     * should be marked as both receivers and casters. Objects that are guaranteed to not cast
+     * shadows on themselves or other objects (such as flat ground planes) can be set to not cast
+     * shadows, which might improve shadow quality.
+     * </p>
+     *
+     * <strong>Warning: This API is still experimental and subject to change.</strong>
+     */
+    public void setShadowType(ShadowType type) {
+        nSetShadowType(getNativeObject(), type.ordinal());
+    }
+
+    /**
+     * Sets VSM shadowing options that apply across the entire View.
+     *
+     * Additional light-specific VSM options can be set with
+     * {@link LightManager.Builder#shadowOptions}.
+     *
+     * Only applicable when shadow type is set to ShadowType::VSM.
+     *
+     * <strong>Warning: This API is still experimental and subject to change.</strong>
+     *
+     * @param options Options for shadowing.
+     * @see #setShadowType
+     */
+    public void setVsmShadowOptions(@NonNull VsmShadowOptions options) {
+        mVsmShadowOptions = options;
+        nSetVsmShadowOptions(getNativeObject(), options.anisotropy);
+    }
+
+    /**
+     * Gets the VSM shadowing options.
+     * @see #setVsmShadowOptions
+     * @return VSM shadow options currently set.
+     */
+    @NonNull
+    public VsmShadowOptions getVsmShadowOptions() {
+        if (mVsmShadowOptions == null) {
+            mVsmShadowOptions = new VsmShadowOptions();
+        }
+        return mVsmShadowOptions;
+    }
+
+    /**
+     * Activates or deactivates ambient occlusion.
+     * @see #setAmbientOcclusionOptions
      * @param ao Type of ambient occlusion to use.
      */
+    @Deprecated
     public void setAmbientOcclusion(@NonNull AmbientOcclusion ao) {
         nSetAmbientOcclusion(getNativeObject(), ao.ordinal());
     }
 
     /**
      * Queries the type of ambient occlusion active for this View.
-     *
+     * @see #getAmbientOcclusionOptions
      * @return ambient occlusion type.
      */
+    @Deprecated
     @NonNull
     public AmbientOcclusion getAmbientOcclusion() {
         return AmbientOcclusion.values()[nGetAmbientOcclusion(getNativeObject())];
@@ -761,7 +1261,13 @@ public class View {
      */
     public void setAmbientOcclusionOptions(@NonNull AmbientOcclusionOptions options) {
         mAmbientOcclusionOptions = options;
-        nSetAmbientOcclusionOptions(getNativeObject(), options.radius, options.bias, options.power, options.resolution);
+        nSetAmbientOcclusionOptions(getNativeObject(), options.radius, options.bias, options.power,
+                options.resolution, options.intensity, options.quality.ordinal(), options.lowPassFilter.ordinal(), options.upsampling.ordinal(),
+                options.enabled, options.minHorizonAngleRad);
+        nSetSSCTOptions(getNativeObject(), options.ssctLightConeRad, options.ssctStartTraceDistance, options.ssctContactDistanceMax,  options.ssctIntensity,
+                options.ssctLightDirection[0], options.ssctLightDirection[1], options.ssctLightDirection[2],
+                options.ssctDepthBias, options.ssctDepthSlopeBias, options.ssctSampleCount,
+                options.ssctRayCount, options.ssctEnabled);
     }
 
     /**
@@ -776,6 +1282,120 @@ public class View {
         }
         return mAmbientOcclusionOptions;
     }
+
+    /**
+     * Sets bloom options.
+     *
+     * @param options Options for bloom.
+     * @see #getBloomOptions
+     */
+    public void setBloomOptions(@NonNull BloomOptions options) {
+        mBloomOptions = options;
+        nSetBloomOptions(getNativeObject(), options.dirt != null ? options.dirt.getNativeObject() : 0,
+                options.dirtStrength, options.strength, options.resolution,
+                options.anamorphism, options.levels, options.blendingMode.ordinal(),
+                options.threshold, options.enabled, options.highlight);
+    }
+
+    /**
+     * Gets the bloom options
+     * @see #setBloomOptions
+     *
+     * @return bloom options currently set.
+     */
+    @NonNull
+    public BloomOptions getBloomOptions() {
+        if (mBloomOptions == null) {
+            mBloomOptions = new BloomOptions();
+        }
+        return mBloomOptions;
+    }
+
+    /**
+     * Sets vignette options.
+     *
+     * @param options Options for vignetting.
+     * @see #getVignetteOptions
+     */
+    public void setVignetteOptions(@NonNull VignetteOptions options) {
+        assertFloat4In(options.color);
+        mVignetteOptions = options;
+        nSetVignetteOptions(getNativeObject(),
+                options.midPoint, options.roundness, options.feather,
+                options.color[0], options.color[1], options.color[2], options.color[3],
+                options.enabled);
+    }
+
+    /**
+     * Gets the vignette options
+     * @see #setVignetteOptions
+     *
+     * @return vignetting options currently set.
+     */
+    @NonNull
+    public VignetteOptions getVignetteOptions() {
+        if (mVignetteOptions == null) {
+            mVignetteOptions = new VignetteOptions();
+        }
+        return mVignetteOptions;
+    }
+
+    /**
+     * Sets fog options.
+     *
+     * @param options Options for fog.
+     * @see #getFogOptions
+     */
+    public void setFogOptions(@NonNull FogOptions options) {
+        assertFloat3In(options.color);
+        mFogOptions = options;
+        nSetFogOptions(getNativeObject(), options.distance, options.maximumOpacity, options.height,
+                options.heightFalloff, options.color[0], options.color[1], options.color[2],
+                options.density, options.inScatteringStart, options.inScatteringSize,
+                options.fogColorFromIbl,
+                options.enabled);
+    }
+
+    /**
+     * Gets the fog options
+     *
+     * @return fog options currently set.
+     * @see #setFogOptions
+     */
+    @NonNull
+    public FogOptions getFogOptions() {
+        if (mFogOptions == null) {
+            mFogOptions = new FogOptions();
+        }
+        return mFogOptions;
+    }
+
+
+    /**
+     * Sets Depth of Field options.
+     *
+     * @param options Options for depth of field effect.
+     * @see #getDepthOfFieldOptions
+     */
+    public void setDepthOfFieldOptions(@NonNull DepthOfFieldOptions options) {
+        mDepthOfFieldOptions = options;
+        nSetDepthOfFieldOptions(getNativeObject(), options.focusDistance, options.cocScale, options.maxApertureDiameter, options.enabled);
+    }
+
+    /**
+     * Gets the Depth of Field options
+     *
+     * @return Depth of Field options currently set.
+     * @see #setDepthOfFieldOptions
+     */
+    @NonNull
+    public DepthOfFieldOptions getDepthOfFieldOptions() {
+        if (mDepthOfFieldOptions == null) {
+            mDepthOfFieldOptions = new DepthOfFieldOptions();
+        }
+        return mDepthOfFieldOptions;
+    }
+
 
     public long getNativeObject() {
         if (mNativeObject == 0) {
@@ -792,32 +1412,36 @@ public class View {
     private static native void nSetScene(long nativeView, long nativeScene);
     private static native void nSetCamera(long nativeView, long nativeCamera);
     private static native void nSetViewport(long nativeView, int left, int bottom, int width, int height);
-    private static native void nSetClearColor(long nativeView, float r, float g, float b, float a);
-    private static native void nGetClearColor(long nativeView, float[] out);
-    private static native void nSetClearTargets(long nativeView, boolean color, boolean depth, boolean stencil);
     private static native void nSetVisibleLayers(long nativeView, int select, int value);
-    private static native void nSetShadowsEnabled(long nativeView, boolean enabled);
+    private static native void nSetShadowingEnabled(long nativeView, boolean enabled);
     private static native void nSetRenderTarget(long nativeView, long nativeRenderTarget);
     private static native void nSetSampleCount(long nativeView, int count);
     private static native int nGetSampleCount(long nativeView);
     private static native void nSetAntiAliasing(long nativeView, int type);
     private static native int nGetAntiAliasing(long nativeView);
-    private static native void nSetToneMapping(long nativeView, int type);
-    private static native int nGetToneMapping(long nativeView);
     private static native void nSetDithering(long nativeView, int dithering);
     private static native int nGetDithering(long nativeView);
-    private static native void nSetDynamicResolutionOptions(long nativeView,
-            boolean enabled, boolean homogeneousScaling,
-            float targetFrameTimeMilli, float headRoomRatio, float scaleRate,
-            float minScale, float maxScale, int history);
+    private static native void nSetDynamicResolutionOptions(long nativeView, boolean enabled, boolean homogeneousScaling, float minScale, float maxScale, int quality);
     private static native void nSetRenderQuality(long nativeView, int hdrColorBufferQuality);
     private static native void nSetDynamicLightingOptions(long nativeView, float zLightNear, float zLightFar);
-    private static native void nSetDepthPrepass(long nativeView, int value);
+    private static native void nSetShadowType(long nativeView, int type);
+    private static native void nSetVsmShadowOptions(long nativeView, int anisotropy);
+    private static native void nSetColorGrading(long nativeView, long nativeColorGrading);
     private static native void nSetPostProcessingEnabled(long nativeView, boolean enabled);
     private static native boolean nIsPostProcessingEnabled(long nativeView);
     private static native void nSetFrontFaceWindingInverted(long nativeView, boolean inverted);
     private static native boolean nIsFrontFaceWindingInverted(long nativeView);
     private static native void nSetAmbientOcclusion(long nativeView, int ordinal);
     private static native int nGetAmbientOcclusion(long nativeView);
-    private static native void nSetAmbientOcclusionOptions(long nativeView, float radius, float bias, float power, float resolution);
+    private static native void nSetAmbientOcclusionOptions(long nativeView, float radius, float bias, float power, float resolution, float intensity, int quality, int lowPassFilter, int upsampling, boolean enabled, float minHorizonAngleRad);
+    private static native void nSetSSCTOptions(long nativeView, float ssctLightConeRad, float ssctStartTraceDistance, float ssctContactDistanceMax, float ssctIntensity, float v, float v1, float v2, float ssctDepthBias, float ssctDepthSlopeBias, int ssctSampleCount, int ssctRayCount, boolean ssctEnabled);
+    private static native void nSetBloomOptions(long nativeView, long dirtNativeObject, float dirtStrength, float strength, int resolution, float anamorphism, int levels, int blendMode, boolean threshold, boolean enabled, float highlight);
+    private static native void nSetFogOptions(long nativeView, float distance, float maximumOpacity, float height, float heightFalloff, float v, float v1, float v2, float density, float inScatteringStart, float inScatteringSize, boolean fogColorFromIbl, boolean enabled);
+    private static native void nSetBlendMode(long nativeView, int blendMode);
+    private static native void nSetDepthOfFieldOptions(long nativeView, float focusDistance, float cocScale, float maxApertureDiameter, boolean enabled);
+    private static native void nSetVignetteOptions(long nativeView, float midPoint, float roundness, float feather, float r, float g, float b, float a, boolean enabled);
+    private static native void nSetTemporalAntiAliasingOptions(long nativeView, float feedback, float filterWidth, boolean enabled);
+    private static native boolean nIsShadowingEnabled(long nativeView);
+    private static native void nSetScreenSpaceRefractionEnabled(long nativeView, boolean enabled);
+    private static native boolean nIsScreenSpaceRefractionEnabled(long nativeView);
 }

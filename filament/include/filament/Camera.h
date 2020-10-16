@@ -19,13 +19,15 @@
 #ifndef TNT_FILAMENT_CAMERA_H
 #define TNT_FILAMENT_CAMERA_H
 
-#include <filament/Frustum.h>
 #include <filament/FilamentAPI.h>
 
-#include <utils/Entity.h>
 #include <utils/compiler.h>
 
-#include <math/mat4.h>
+#include <math/mathfwd.h>
+
+namespace utils {
+class Entity;
+} // namespace utils
 
 namespace filament {
 
@@ -176,7 +178,7 @@ public:
 
     /** Sets the projection matrix from the field-of-view.
      *
-     * @param fovInDegrees field-of-view in degrees from the camera center axis. 0 < \p fov < 180.
+     * @param fovInDegrees full field-of-view in degrees. 0 < \p fov < 180.
      * @param aspect       aspect ratio \f$ \frac{width}{height} \f$. \p aspect > 0.
      * @param near         distance in world units from the camera to the near plane. \p near > 0.
      * @param far          distance in world units from the camera to the far plane. \p far > \p near.
@@ -187,13 +189,14 @@ public:
     void setProjection(double fovInDegrees, double aspect, double near, double far,
                        Fov direction = Fov::VERTICAL) noexcept;
 
-    /** Sets the projection matrix from the focal length
+    /** Sets the projection matrix from the focal length.
      *
-     * @param focalLength   lense's focal length in millimeters. \p focalLength > 0.
-     * @param near      distance in world units from the camera to the near plane. \p near > 0.
-     * @param far       distance in world units from the camera to the far plane. \p far > \p near.
+     * @param focalLength lens's focal length in millimeters. \p focalLength > 0.
+     * @param aspect      aspect ratio \f$ \frac{width}{height} \f$. \p aspect > 0.
+     * @param near        distance in world units from the camera to the near plane. \p near > 0.
+     * @param far         distance in world units from the camera to the far plane. \p far > \p near.
      */
-    void setLensProjection(double focalLength, double near, double far) noexcept;
+    void setLensProjection(double focalLength, double aspect, double near, double far) noexcept;
 
     /** Sets the projection matrix.
      *
@@ -203,16 +206,39 @@ public:
      */
     void setCustomProjection(math::mat4 const& projection, double near, double far) noexcept;
 
+    /** Sets an additional matrix that scales the projection matrix.
+     *
+     * This is useful to adjust the aspect ratio of the camera independent from its projection.
+     * First, pass an aspect of 1.0 to setProjection. Then set the scaling with the desired aspect
+     * ratio:
+     *
+     *     const double aspect = width / height;
+     *
+     *     // with Fov::HORIZONTAL passed to setProjection:
+     *     camera->setScaling(double4 {1.0, aspect, 1.0, 1.0});
+     *
+     *     // with Fov::VERTICAL passed to setProjection:
+     *     camera->setScaling(double4 {1.0 / aspect, 1.0, 1.0, 1.0});
+     *
+     *
+     * By default, this is an identity matrix.
+     *
+     * @param scaling     diagonal of the scaling matrix to be applied after the projection matrix.
+     *
+     * @see setProjection, setLensProjection, setCustomProjection
+     */
+    void setScaling(math::double4 const& scaling) noexcept;
+
     /** Returns the projection matrix used for rendering.
      *
      * The projection matrix used for rendering always has its far plane set to infinity. This
-     * it why it may differ from the matrix set through setProjection() or setLensProjection().
+     * is why it may differ from the matrix set through setProjection() or setLensProjection().
      *
      * @return The projection matrix used for rendering
      *
      * @see setProjection, setLensProjection, setCustomProjection, getCullingProjectionMatrix
      */
-    const math::mat4& getProjectionMatrix() const noexcept;
+    math::mat4 getProjectionMatrix() const noexcept;
 
 
     /** Returns the projection matrix used for culling (far plane is finite).
@@ -221,7 +247,16 @@ public:
      *
      * @see setProjection, setLensProjection, getProjectionMatrix
      */
-    const math::mat4& getCullingProjectionMatrix() const noexcept;
+    math::mat4 getCullingProjectionMatrix() const noexcept;
+
+
+    /** Returns the scaling amount used to scale the projection matrix.
+     *
+     * @return the diagonal of the scaling matrix applied after the projection matrix.
+     *
+     * @see setScaling
+     */
+    const math::double4& getScaling() const noexcept;
 
 
     //! Returns the frustum's near plane
@@ -256,7 +291,15 @@ public:
      */
     void lookAt(const math::float3& eye,
                 const math::float3& center,
-                const math::float3& up = { 0, 1, 0 }) noexcept;
+                const math::float3& up) noexcept;
+
+    /** Sets the camera's view matrix, assuming up is along the y axis
+     *
+     * @param eye       The position of the camera in world space.
+     * @param center    The point in world space the camera is looking at.
+     */
+    void lookAt(const math::float3& eye,
+                const math::float3& center) noexcept;
 
     /** Returns the camera's model matrix
      *
@@ -288,8 +331,11 @@ public:
     //! Returns the camera's forward vector
     math::float3 getForwardVector() const noexcept;
 
+    //! Returns the camera's field of view in degrees
+    float getFieldOfViewInDegrees(Fov direction) const noexcept;
+
     //! Returns a Frustum object in world space
-    Frustum getFrustum() const noexcept;
+    class Frustum getFrustum() const noexcept;
 
     //! Returns the entity representing this camera
     utils::Entity getEntity() const noexcept;

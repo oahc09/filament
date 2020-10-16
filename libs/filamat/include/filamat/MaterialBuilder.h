@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <backend/DriverEnums.h>
+#include <backend/TargetBufferInfo.h>
 #include <filament/MaterialEnums.h>
 
 #include <filamat/IncludeCallback.h>
@@ -91,7 +92,7 @@ public:
 
 protected:
     // Looks at platform and target API, then decides on shader models and output formats.
-    void prepare();
+    void prepare(bool vulkanSemantics);
 
     using ShaderModel = filament::backend::ShaderModel;
     Platform mPlatform = Platform::DESKTOP;
@@ -175,38 +176,16 @@ public:
         // when adding more variables, make sure to update MATERIAL_VARIABLES_COUNT
     };
 
-    static constexpr size_t MATERIAL_PROPERTIES_COUNT = 20;
-    enum class Property : uint8_t {
-        BASE_COLOR,              // float4, all shading models
-        ROUGHNESS,               // float,  lit shading models only
-        METALLIC,                // float,  all shading models, except unlit and cloth
-        REFLECTANCE,             // float,  all shading models, except unlit and cloth
-        AMBIENT_OCCLUSION,       // float,  lit shading models only, except subsurface and cloth
-        CLEAR_COAT,              // float,  lit shading models only, except subsurface and cloth
-        CLEAR_COAT_ROUGHNESS,    // float,  lit shading models only, except subsurface and cloth
-        CLEAR_COAT_NORMAL,       // float,  lit shading models only, except subsurface and cloth
-        ANISOTROPY,              // float,  lit shading models only, except subsurface and cloth
-        ANISOTROPY_DIRECTION,    // float3, lit shading models only, except subsurface and cloth
-        THICKNESS,               // float,  subsurface shading model only
-        SUBSURFACE_POWER,        // float,  subsurface shading model only
-        SUBSURFACE_COLOR,        // float3, subsurface and cloth shading models only
-        SHEEN_COLOR,             // float3, cloth shading model only
-        SPECULAR_COLOR,          // float3, specular-glossiness shading model only
-        GLOSSINESS,              // float,  specular-glossiness shading model only
-        EMISSIVE,                // float4, all shading models
-        NORMAL,                  // float3, all shading models only, except unlit
-        POST_LIGHTING_COLOR,     // float4, all shading models
-        CLIP_SPACE_TRANSFORM,    // mat4,   vertex shader only
-        // when adding new Properties, make sure to update MATERIAL_PROPERTIES_COUNT
-    };
-
     using MaterialDomain = filament::MaterialDomain;
+    using RefractionMode = filament::RefractionMode;
+    using RefractionType = filament::RefractionType;
 
     using BlendingMode = filament::BlendingMode;
     using Shading = filament::Shading;
     using Interpolation = filament::Interpolation;
     using VertexDomain = filament::VertexDomain;
     using TransparencyMode = filament::TransparencyMode;
+    using SpecularAmbientOcclusion = filament::SpecularAmbientOcclusion;
 
     using UniformType = filament::backend::UniformType;
     using SamplerType = filament::backend::SamplerType;
@@ -214,8 +193,36 @@ public:
     using SamplerPrecision = filament::backend::Precision;
     using CullingMode = filament::backend::CullingMode;
 
+    enum class VariableQualifier : uint8_t {
+        OUT
+    };
+
+    enum class OutputTarget : uint8_t {
+        COLOR,
+        DEPTH
+    };
+
+    enum class OutputType : uint8_t {
+        FLOAT,
+        FLOAT2,
+        FLOAT3,
+        FLOAT4
+    };
+
+    struct PreprocessorDefine {
+        std::string name;
+        std::string value;
+
+        PreprocessorDefine(const std::string& name, const std::string& value) :
+            name(name), value(value) {}
+    };
+    using PreprocessorDefineList = std::vector<PreprocessorDefine>;
+
     //! Set the name of this material.
     MaterialBuilder& name(const char* name) noexcept;
+
+    //! Set the file name of this material file. Used in error reporting.
+    MaterialBuilder& fileName(const char* name) noexcept;
 
     //! Set the shading model.
     MaterialBuilder& shading(Shading shading) noexcept;
@@ -282,6 +289,10 @@ public:
      *     postProcess.color = float4(1.0);
      * }
      * ~~~~~
+     *
+     * @param code The source code of the material.
+     * @param line The line number offset of the material, where 0 is the first line. Used for error
+     *             reporting
      */
     MaterialBuilder& material(const char* code, size_t line = 0) noexcept;
 
@@ -313,6 +324,10 @@ public:
      *
      * }
      * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+     * @param code The source code of the material.
+     * @param line The line number offset of the material, where 0 is the first line. Used for error
+     *             reporting
      */
     MaterialBuilder& materialVertex(const char* code, size_t line = 0) noexcept;
 
@@ -335,13 +350,13 @@ public:
      */
     MaterialBuilder& culling(CullingMode culling) noexcept;
 
-    //! Enable / disable color-buffer write (enabled by default).
+    //! Enable / disable color-buffer write (enabled by default, material instances can override).
     MaterialBuilder& colorWrite(bool enable) noexcept;
 
-    //! Enable / disable depth-buffer write (enabled by default for opaque, disabled for others).
+    //! Enable / disable depth-buffer write (enabled by default for opaque, disabled for others, material instances can override).
     MaterialBuilder& depthWrite(bool enable) noexcept;
 
-    //! Enable / disable depth based culling (enabled by default).
+    //! Enable / disable depth based culling (enabled by default, material instances can override).
     MaterialBuilder& depthCulling(bool enable) noexcept;
 
     /**
@@ -405,8 +420,14 @@ public:
     //! Enable / disable multi-bounce ambient occlusion, disabled by default on mobile.
     MaterialBuilder& multiBounceAmbientOcclusion(bool multiBounceAO) noexcept;
 
-    //! Enable / disable specular ambient occlusion, disabled by default on mobile.
-    MaterialBuilder& specularAmbientOcclusion(bool specularAO) noexcept;
+    //! Set the specular ambient occlusion technique. Disabled by default on mobile.
+    MaterialBuilder& specularAmbientOcclusion(SpecularAmbientOcclusion specularAO) noexcept;
+
+    //! Specify the refraction
+    MaterialBuilder& refractionMode(RefractionMode refraction) noexcept;
+
+    //! Specify the refraction type
+    MaterialBuilder& refractionType(RefractionType refractionType) noexcept;
 
     //! Specifies how transparent objects should be rendered (default is DEFAULT).
     MaterialBuilder& transparencyMode(TransparencyMode mode) noexcept;
@@ -443,6 +464,16 @@ public:
     //! Specifies a list of variants that should be filtered out during code generation.
     MaterialBuilder& variantFilter(uint8_t variantFilter) noexcept;
 
+    //! Adds a new preprocessor macro definition to the shader code. Can be called repeatedly.
+    MaterialBuilder& shaderDefine(const char* name, const char* value) noexcept;
+
+    //! Add a new fragment shader output variable. Only valid for materials in the POST_PROCESS domain.
+    MaterialBuilder& output(VariableQualifier qualifier, OutputTarget target,
+            OutputType type, const char* name) noexcept;
+
+    MaterialBuilder& enableFramebufferFetch() noexcept;
+
+
     //! Build the material.
     Package build() noexcept;
 
@@ -470,8 +501,30 @@ public:
         bool isSampler;
     };
 
+    struct Output {
+        Output() noexcept = default;
+        Output(const char* outputName, VariableQualifier qualifier, OutputTarget target,
+                OutputType type)
+            : name(outputName), qualifier(qualifier), target(target), type(type) { }
+
+        utils::CString name;
+        VariableQualifier qualifier;
+        OutputTarget target;
+        OutputType type;
+    };
+
+    static constexpr size_t MATERIAL_PROPERTIES_COUNT = filament::MATERIAL_PROPERTIES_COUNT;
+    using Property = filament::Property;
+
     using PropertyList = bool[MATERIAL_PROPERTIES_COUNT];
     using VariableList = utils::CString[MATERIAL_VARIABLES_COUNT];
+    using OutputList = std::vector<Output>;
+
+    static constexpr size_t MAX_COLOR_OUTPUT = filament::backend::MRT::TARGET_COUNT;
+    static constexpr size_t MAX_DEPTH_OUTPUT = 1;
+    static_assert(MAX_COLOR_OUTPUT == 4,
+            "When updating MRT::TARGET_COUNT, manually update post_process_inputs.fs"
+            " and post_process.fs");
 
     // Preview the first shader generated by the given CodeGenParams.
     // This is used to run Static Code Analysis before generating a package.
@@ -481,7 +534,7 @@ public:
     // Returns true if any of the parameter samplers is of type samplerExternal
     bool hasExternalSampler() const noexcept;
 
-    static constexpr size_t MAX_PARAMETERS_COUNT = 32;
+    static constexpr size_t MAX_PARAMETERS_COUNT = 48;
     using ParameterList = Parameter[MAX_PARAMETERS_COUNT];
 
     // returns the number of parameters declared in this material
@@ -518,6 +571,7 @@ private:
     bool isLit() const noexcept { return mShading != filament::Shading::UNLIT; }
 
     utils::CString mMaterialName;
+    utils::CString mFileName;
 
     class ShaderCode {
     public:
@@ -528,7 +582,7 @@ private:
         }
 
         // Resolve all the #include directives, returns true if successful.
-        bool resolveIncludes(IncludeCallback callback) noexcept;
+        bool resolveIncludes(IncludeCallback callback, const utils::CString& fileName) noexcept;
 
         const utils::CString& getResolved() const noexcept {
             assert(mIncludesResolved);
@@ -551,12 +605,15 @@ private:
     PropertyList mProperties;
     ParameterList mParameters;
     VariableList mVariables;
+    OutputList mOutputs;
 
     BlendingMode mBlendingMode = BlendingMode::OPAQUE;
     BlendingMode mPostLightingBlendingMode = BlendingMode::TRANSPARENT;
     CullingMode mCullingMode = CullingMode::BACK;
     Shading mShading = Shading::LIT;
     MaterialDomain mMaterialDomain = MaterialDomain::SURFACE;
+    RefractionMode mRefractionMode = RefractionMode::NONE;
+    RefractionType mRefractionType = RefractionType::SOLID;
     Interpolation mInterpolation = Interpolation::SMOOTH;
     VertexDomain mVertexDomain = VertexDomain::OBJECT;
     TransparencyMode mTransparencyMode = TransparencyMode::DEFAULT;
@@ -585,8 +642,13 @@ private:
 
     bool mMultiBounceAO = false;
     bool mMultiBounceAOSet = false;
-    bool mSpecularAO = false;
+
+    SpecularAmbientOcclusion mSpecularAO = SpecularAmbientOcclusion::NONE;
     bool mSpecularAOSet = false;
+
+    bool mEnableFramebufferFetch = false;
+
+    PreprocessorDefineList mDefines;
 };
 
 } // namespace filamat

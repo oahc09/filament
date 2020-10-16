@@ -16,9 +16,9 @@
 
 package com.google.android.filament;
 
-import android.support.annotation.IntRange;
-import android.support.annotation.NonNull;
-import android.support.annotation.Size;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
+import androidx.annotation.Size;
 
 import com.google.android.filament.proguard.UsedByNative;
 
@@ -142,6 +142,31 @@ public class Material {
     }
 
     /**
+     * Supported refraction modes
+     *
+     * @see
+     * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/blendingandtransparency:refraction">
+     * Blending and transparency: refractionMode</a>
+     */
+    public enum RefractionMode {
+        NONE,
+        CUBEMAP,
+        SCREEN_SPACE
+    }
+
+    /**
+     * Supported refraction types
+     *
+     * @see
+     * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/blendingandtransparency:refractiontype">
+     * Blending and transparency: refractionType</a>
+     */
+    public enum RefractionType {
+        SOLID,
+        THIN
+    }
+
+    /**
      * Supported types of vertex domains
      *
      * @see
@@ -205,8 +230,10 @@ public class Material {
             MAT3,
             MAT4,
             SAMPLER_2D,
+            SAMPLER_2D_ARRAY,
             SAMPLER_CUBEMAP,
-            SAMPLER_EXTERNAL
+            SAMPLER_EXTERNAL,
+            SAMPLER_3D
         }
 
         public enum Precision {
@@ -301,6 +328,21 @@ public class Material {
         return new MaterialInstance(this, nativeInstance);
     }
 
+    /**
+     * Creates a new instance of this material with a specified name. Material instances should be
+     * freed using {@link Engine#destroyMaterialInstance(MaterialInstance)}.
+     *
+     * @param name arbitrary label to associate with the given material instance
+     *
+     * @return the new instance
+     */
+    @NonNull
+    public MaterialInstance createInstance(@NonNull String name) {
+        long nativeInstance = nCreateInstanceWithName(getNativeObject(), name);
+        if (nativeInstance == 0) throw new IllegalStateException("Couldn't create MaterialInstance");
+        return new MaterialInstance(this, nativeInstance);
+    }
+
     /** Returns the material's default instance. */
     @NonNull
     public MaterialInstance getDefaultInstance() {
@@ -352,12 +394,34 @@ public class Material {
     }
 
     /**
+     * Returns the refraction mode of this material.
+     *
+     * @see
+     * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/blendingandtransparency:refraction">
+     * Blending and transparency: refraction</a>
+     */
+    public RefractionMode getRefractionMode() {
+        return RefractionMode.values()[nGetRefractionMode(getNativeObject())];
+    }
+
+    /**
+     * Returns the refraction type of this material.
+     *
+     * @see
+     * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/blendingandtransparency:refractiontype">
+     * Blending and transparency: refractionType</a>
+     */
+    public RefractionType getRefractionType() {
+        return RefractionType.values()[nGetRefractionType(getNativeObject())];
+    }
+
+
+    /**
      * Returns the vertex domain of this material.
      *
-     * @se
+     * @see
      * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/vertexandattributes:vertexdomain">
      * Vertex and attributes: vertexDomain</a>
-     * @return
      */
     public VertexDomain getVertexDomain() {
         return VertexDomain.values()[nGetVertexDomain(getNativeObject())];
@@ -375,7 +439,7 @@ public class Material {
     }
 
     /**
-     * Indicates whether this material will write to the color buffer.
+     * Indicates whether instances of this material will, by default, write to the color buffer.
      *
      * @see
      * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/rasterization:colorwrite">
@@ -386,7 +450,7 @@ public class Material {
     }
 
     /**
-     * Indicates whether this material will write to the depth buffer.
+     * Indicates whether instances of this material will, by default, write to the depth buffer.
      *
      * @see
      * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/rasterization:depthwrite">
@@ -397,7 +461,7 @@ public class Material {
     }
 
     /**
-     * Indicates whether this material will use depth testing.
+     * Indicates whether instances of this material will, by default, use depth testing.
      *
      * @see
      * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/rasterization:depthculling">
@@ -832,6 +896,7 @@ public class Material {
 
     private static native long nBuilderBuild(long nativeEngine, @NonNull Buffer buffer, int size);
     private static native long nCreateInstance(long nativeMaterial);
+    private static native long nCreateInstanceWithName(long nativeMaterial, @NonNull String name);
     private static native long nGetDefaultInstance(long nativeMaterial);
 
     private static native String nGetName(long nativeMaterial);
@@ -847,6 +912,9 @@ public class Material {
     private static native float nGetMaskThreshold(long nativeMaterial);
     private static native float nGetSpecularAntiAliasingVariance(long nativeMaterial);
     private static native float nGetSpecularAntiAliasingThreshold(long nativeMaterial);
+    private static native int nGetRefractionMode(long nativeMaterial);
+    private static native int nGetRefractionType(long nativeMaterial);
+
 
     private static native int nGetParameterCount(long nativeMaterial);
     private static native void nGetParameters(long nativeMaterial,

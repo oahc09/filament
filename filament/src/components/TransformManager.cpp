@@ -16,11 +16,12 @@
 
 #include "components/TransformManager.h"
 
+#include <math/mat4.h>
+
 using namespace utils;
 using namespace filament::math;
 
 namespace filament {
-namespace details {
 
 FTransformManager::FTransformManager() noexcept = default;
 
@@ -65,6 +66,10 @@ void FTransformManager::setParent(Instance i, Instance parent) noexcept {
             removeNode(i);
             insertNode(i, parent);
             updateNodeTransform(i);
+            // Note: setParent() doesn't reorder the child after the parent in the array,
+            // but that's not a problem because TransformManager doesn't rely on that.
+            // Also note that commitLocalTransformTransaction() does reorder all children after
+            // their parent, as an optimization to calculate the world transform.
         }
     }
 }
@@ -176,7 +181,7 @@ void FTransformManager::commitLocalTransformTransaction() noexcept {
         mat4f const* const UTILS_RESTRICT world = manager.raw_array<WORLD>();
         for (Instance i = manager.begin(), e = manager.end(); i != e; ++i) {
             // Ensure that children are always sorted after their parent.
-            if (UTILS_UNLIKELY(Instance(manager[i].parent) > i)) {
+            while (UTILS_UNLIKELY(Instance(manager[i].parent) > i)) {
                 swapNode(i, manager[i].parent);
             }
             Instance parent = manager[i].parent;
@@ -194,6 +199,7 @@ void FTransformManager::insertNode(Instance i, Instance parent) noexcept {
 
     manager[i].parent = parent;
     manager[i].prev = 0;
+    manager[i].next = 0;
     if (parent) {
         // we insert ourselves first in the parent's list
         Instance next = manager[parent].firstChild;
@@ -267,7 +273,7 @@ void FTransformManager::removeNode(Instance i) noexcept {
     }
 
 #ifndef NDEBUG
-    // we no longer have a parent or siblings. we don't really have to clear thos fields
+    // we no longer have a parent or siblings. we don't really have to clear those fields
     // so we only do it in DEBUG mode
     manager[i].parent = 0;
     manager[i].prev = 0;
@@ -373,10 +379,6 @@ void FTransformManager::gc(utils::EntityManager& em) noexcept {
             });
 }
 
-} // namespace details
-
-using namespace details;
-
 TransformManager::children_iterator& TransformManager::children_iterator::operator++() {
     FTransformManager const& that = upcast(mManager);
     mInstance = that.mManager[mInstance].next;
@@ -389,6 +391,10 @@ TransformManager::children_iterator& TransformManager::children_iterator::operat
 
 void TransformManager::create(Entity entity, Instance parent, const mat4f& worldTransform) {
     upcast(this)->create(entity, parent, worldTransform);
+}
+
+void TransformManager::create(Entity entity, Instance parent) {
+    upcast(this)->create(entity, parent, {});
 }
 
 void TransformManager::destroy(Entity e) noexcept {

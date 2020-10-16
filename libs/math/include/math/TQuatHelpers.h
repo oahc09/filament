@@ -22,8 +22,6 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#include <iostream>
-
 #include <math/compiler.h>
 #include <math/scalar.h>
 #include <math/vec3.h>
@@ -283,28 +281,6 @@ public:
     friend inline
     constexpr QUATERNION<T> MATH_PURE positive(const QUATERNION<T>& q) {
         return q.w < 0 ? -q : q;
-    }
-};
-
-/*
- * TQuatDebug implements functions on a vector of type BASE<T>.
- *
- * BASE only needs to implement operator[] and size().
- * By simply inheriting from TQuatDebug<BASE, T> BASE will automatically
- * get all the functionality here.
- */
-template<template<typename T> class QUATERNION, typename T>
-class TQuatDebug {
-public:
-    /*
-     * NOTE: the functions below ARE NOT member methods. They are friend functions
-     * with they definition inlined with their declaration. This makes these
-     * template functions available to the compiler when (and only when) this class
-     * is instantiated, at which point they're only templated on the 2nd parameter
-     * (the first one, BASE<T> being known).
-     */
-    friend std::ostream& operator<<(std::ostream& stream, const QUATERNION<T>& q) {
-        return stream << "< " << q.w << " + " << q.x << "i + " << q.y << "j + " << q.z << "k >";
     }
 };
 

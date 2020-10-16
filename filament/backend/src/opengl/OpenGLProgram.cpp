@@ -22,6 +22,8 @@
 #include <utils/compiler.h>
 #include <utils/Panic.h>
 
+#include <private/backend/BackendUtils.h>
+
 #include <cctype>
 
 namespace filament {
@@ -53,10 +55,23 @@ OpenGLProgram::OpenGLProgram(OpenGLDriver* gl, const Program& programBuilder) no
 
         if (!shadersSource[i].empty()) {
             GLint status;
-            char const* const source = (const char*)shadersSource[i].data();
+            auto shader = shadersSource[i];
+            GLint const length = (GLint)shader.size();
+
+#ifndef NDEBUG
+            // If usages of the Google-style line directive are present, remove them, as some
+            // drivers don't allow the quotation marks.
+            if (requestsGoogleLineDirectivesExtension((const char*) shader.data(), length)) {
+                auto temp = shader;
+                removeGoogleLineDirectives((char*) temp.data(), length);    // length is unaffected
+                shader = std::move(temp);
+            }
+#endif
+
+            const char * const source = (const char*)shader.data();
 
             GLuint shaderId = glCreateShader(glShaderType);
-            glShaderSource(shaderId, 1, &source, nullptr);
+            glShaderSource(shaderId, 1, &source, &length);
             glCompileShader(shaderId);
 
             glGetShaderiv(shaderId, GL_COMPILE_STATUS, &status);
@@ -199,7 +214,10 @@ void OpenGLProgram::updateSamplers(OpenGLDriver* gl) noexcept {
 
             Handle<HwTexture> th = samplers[index].t;
             if (UTILS_UNLIKELY(!th)) {
-                continue; // this can happen if the SamplerGroup isn't initialized
+#ifndef NDEBUG
+                slog.w << "no texture bound to unit " << +index << io::endl;
+#endif
+                continue;
             }
 
             const GLTexture* const UTILS_RESTRICT t = gl->handle_cast<const GLTexture*>(th);
@@ -211,7 +229,6 @@ void OpenGLProgram::updateSamplers(OpenGLDriver* gl) noexcept {
 
             gl->bindTexture(tmu, t);
 
-            // FIXME: getSampler() is expensive because it's a hashmap lookup
             GLuint sampler = gl->getSampler(samplers[index].s);
             gl->getContext().bindSampler(tmu, sampler);
         }

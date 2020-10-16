@@ -18,6 +18,9 @@
 #define TNT_TEXTURERESHAPER_H
 
 #include <backend/DriverEnums.h>
+#include <backend/PixelBufferDescriptor.h>
+
+#include <functional>
 
 namespace filament {
 namespace backend {
@@ -34,6 +37,11 @@ public:
     explicit TextureReshaper(TextureFormat requestedFormat) noexcept;
 
     /**
+     * Returns true if the TextureFormat requires reshaping.
+     */
+    bool needsReshaping() const noexcept { return mNeedsReshaping; }
+
+    /**
      * Returns the graphics API-native TextureFormat that pixels will be reshaped into.
      * If the format does not need reshaping, the original requestedFormat is returned.
      */
@@ -42,28 +50,18 @@ public:
     /**
      * reshapes the pixel buffer by adding components.
      *
-     * @param data The pixel buffer to reshape.
-     * @param size The size in bytes of the pixel buffer.
-     * @return The reshaped pixel buffer.
+     * @param p The pixel buffer to reshape.
+     * @return A new PixelBufferDescriptor containing the reshaped pixels.
      */
-    void* reshape(void* data, size_t size) const;
-
-    /**
-     * The reshape method allocates a temporary buffer for reshaped pixels. Call freeBuffer to free
-     * the reshaped pixel buffer. If the pixels did not need reshaping, this method is an no-op.
-     *
-     * @param buffer The buffer returned from a prior call to reshape.
-     */
-    void freeBuffer(void* buffer) const;
+    PixelBufferDescriptor reshape(PixelBufferDescriptor& p) const;
 
     static bool canReshapeTextureFormat(TextureFormat format) noexcept;
 
 private:
 
-    std::function<void*(void*, size_t)> reshapeFunction =
-            [](void* buffer, size_t){ return buffer; };
-    std::function<void(void*)> deleter = [](void* buffer){};
-    TextureFormat reshapedFormat;
+    std::function<PixelBufferDescriptor(PixelBufferDescriptor& p)> mReshapeFunction;
+    TextureFormat mReshapedFormat;
+    bool mNeedsReshaping;
 
 };
 

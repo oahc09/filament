@@ -55,18 +55,27 @@ public:
     void set(CVPixelBufferRef image) noexcept;
 
     /**
+     * Set this external image to a specific plane of the passed-in CVPixelBuffer. Future calls to
+     * getMetalTextureForDraw will return a texture backed by a single plane of this CVPixelBuffer.
+     * Previous CVPixelBuffers and related resources will be released when all GPU work using them
+     * has finished.
+     */
+    void set(CVPixelBufferRef image, size_t plane) noexcept;
+
+    /**
      * Get a Metal texture used to draw this image and denote that it is used for the current frame.
      * For future frames that use this external image, getMetalTextureForDraw must be called again.
      */
     id<MTLTexture> getMetalTextureForDraw() const noexcept;
 
     /**
-     * Free global resources. Should be called at least once per process when no further calls to
-     * set will occur.
+     * Free resources. Should be called at least once when no further calls to set will occur.
      */
-    static void shutdown() noexcept;
+    static void shutdown(MetalContext& context) noexcept;
 
 private:
+
+    void unset();
 
     CVMetalTextureRef createTextureFromImage(CVPixelBufferRef image, MTLPixelFormat format,
             size_t plane);

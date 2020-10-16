@@ -12,7 +12,6 @@ Filament. Latest versions are available on the [project page](https://github.com
 - `mipgen`, Generates a series of miplevels from a source image.
 - `normal-blending`, Tool to blend normal maps
 - `roughness-prefilter`, Pre-filters a roughness map from a normal map to reduce aliasing
-- `skygen`, Physically-based sky environment texture generator
 - `specular-color`, Computes the specular color of conductors based on spectral data
 
 You can refer to the individual documentation files in `docs/` for more information.
@@ -44,7 +43,7 @@ To link against debug builds of Filament, you must also link against:
 To use the Vulkan backend on macOS you must also make the following libraries available at runtime:
 - `MoltenVK_icd.json`
 - `libMoltenVK.dylib`
-- `vulkan.1.dylib`
+- `libvulkan.1.dylib`
 
 ## Linking against Filament
 
@@ -95,7 +94,7 @@ main: main.o
 	$(CC) -Llib/x86_64/ main.o $(FILAMENT_LIBS) -lpthread -lc++ -ldl -o main
 
 main.o: main.cpp
-	$(CC) -Iinclude/ -std=c++14 -pthread -c main.cpp
+	$(CC) -Iinclude/ -std=c++17 -pthread -c main.cpp
 
 clean:
 	rm -f main main.o
@@ -114,7 +113,7 @@ main: main.o
 	$(CC) -Llib/x86_64/ main.o $(FILAMENT_LIBS) $(FRAMEWORKS) -o main
 
 main.o: main.cpp
-	$(CC) -Iinclude/ -std=c++14 -c main.cpp
+	$(CC) -Iinclude/ -std=c++17 -c main.cpp
 
 clean:
 	rm -f main main.o
@@ -134,22 +133,21 @@ When building Filament from source, the `USE_STATIC_CRT` CMake option can be
 used to change the run-time library version.
 
 ```
-FILAMENT_LIBS=lib/x86_64/mt/filament.lib lib/x86_64/mt/backend.lib lib/x86_64/mt/bluegl.lib \
-              lib/x86_64/mt/filabridge.lib lib/x86_64/mt/filaflat.lib lib/x86_64/mt/utils.lib \
-              lib/x86_64/mt/geometry.lib lib/x86_64/mt/smol-v.lib lib/x86_64/mt/ibl.lib
-CC=clang-cl.exe
+FILAMENT_LIBS=filament.lib backend.lib bluegl.lib bluevk.lib filabridge.lib filaflat.lib \
+              utils.lib geometry.lib smol-v.lib ibl.lib
+CC=cl.exe
 
 main.exe: main.obj
-	$(CC) main.obj $(FILAMENT_LIBS) gdi32.lib user32.lib opengl32.lib
+	$(CC) main.obj /link /libpath:"lib\\x86_64\\mt\\" $(FILAMENT_LIBS) \
+	gdi32.lib user32.lib opengl32.lib
 
 main.obj: main.cpp
-	$(CC) /MT /Iinclude/ /std:c++14 /c main.cpp
+	$(CC) /MT /Iinclude\\ /std:c++17 /c main.cpp
 
 clean:
 	del main.exe main.obj
 
 .PHONY: clean
-
 ```
 
 ### Compiling

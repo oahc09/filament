@@ -4,16 +4,18 @@ project(filament C ASM)
 set(TARGET filament)
 set(PUBLIC_HDR_DIR include)
 set(GENERATION_ROOT ${CMAKE_CURRENT_BINARY_DIR})
-set(RESOURCE_DIR  "${GENERATION_ROOT}/generated/resources")
-set(MATERIAL_DIR  "${GENERATION_ROOT}/generated/material")
+set(RESOURCE_DIR "${GENERATION_ROOT}/generated/resources")
+set(MATERIAL_DIR "${GENERATION_ROOT}/generated/material")
 
 # ==================================================================================================
 # Sources and headers
 # ==================================================================================================
+
 set(PUBLIC_HDRS
         include/filament/Box.h
         include/filament/Camera.h
         include/filament/Color.h
+        include/filament/ColorGrading.h
         include/filament/DebugRegistry.h
         include/filament/Engine.h
         include/filament/Exposure.h
@@ -44,14 +46,17 @@ set(SRCS
         src/components/LightManager.cpp
         src/components/RenderableManager.cpp
         src/components/TransformManager.cpp
+        src/fg/Blackboard.cpp
         src/fg/FrameGraph.cpp
         src/fg/FrameGraphHandle.cpp
-        src/fg/fg/RenderTarget.cpp
+        src/fg/FrameGraphPassResources.cpp
+        src/fg/fg/PassNode.cpp
+        src/fg/fg/RenderTargetResourceEntry.cpp
         src/fg/fg/ResourceEntry.cpp
-        src/fg/ResourceAllocator.cpp
         src/Box.cpp
         src/Camera.cpp
         src/Color.cpp
+        src/ColorGrading.cpp
         src/Culler.cpp
         src/DebugRegistry.cpp
         src/DFG.cpp
@@ -74,8 +79,10 @@ set(SRCS
         src/RenderPass.cpp
         src/RenderPrimitive.cpp
         src/RenderTarget.cpp
+        src/ResourceAllocator.cpp
         src/Scene.cpp
         src/ShadowMap.cpp
+        src/ShadowMapManager.cpp
         src/Skybox.cpp
         src/SwapChain.cpp
         src/Stream.cpp
@@ -90,18 +97,19 @@ set(PRIVATE_HDRS
         src/components/LightManager.h
         src/components/RenderableManager.h
         src/components/TransformManager.h
+        src/fg/Blackboard.h
         src/fg/FrameGraph.h
         src/fg/FrameGraphPass.h
         src/fg/FrameGraphPassResources.h
         src/fg/FrameGraphHandle.h
         src/fg/fg/PassNode.h
-        src/fg/fg/RenderTarget.h
         src/fg/fg/ResourceEntry.h
+        src/fg/fg/RenderTargetResourceEntry.h
         src/fg/fg/ResourceNode.h
-        src/fg/ResourceAllocator.h
         src/fg/fg/VirtualResource.h
         src/details/Allocators.h
         src/details/Camera.h
+        src/details/ColorGrading.h
         src/details/Culler.h
         src/details/DebugRegistry.h
         src/details/DFG.h
@@ -119,6 +127,7 @@ set(PRIVATE_HDRS
         src/details/ResourceList.h
         src/details/Scene.h
         src/details/ShadowMap.h
+        src/details/ShadowMapManager.h
         src/details/Skybox.h
         src/details/Stream.h
         src/details/SwapChain.h
@@ -127,23 +136,41 @@ set(PRIVATE_HDRS
         src/details/View.h
         src/FilamentAPI-impl.h
         src/FrameInfo.h
+        src/FrameHistory.h
         src/GPUBuffer.h
         src/Intersections.h
         src/MaterialParser.h
         src/PostProcessManager.h
         src/RenderPass.h
+        src/ResourceAllocator.h
+        src/ToneMapping.h
         src/UniformBuffer.h
         src/upcast.h)
 
 set(MATERIAL_SRCS
+        src/materials/colorGrading/colorGrading.mat
+        src/materials/colorGrading/colorGradingAsSubpass.mat
         src/materials/defaultMaterial.mat
-        src/materials/blur.mat
-        src/materials/mipmapDepth.mat
+        src/materials/dof/dof.mat
+        src/materials/dof/dofDownsample.mat
+        src/materials/dof/dofCombine.mat
+        src/materials/dof/dofTiles.mat
+        src/materials/dof/dofDilate.mat
+        src/materials/dof/dofMipmap.mat
+        src/materials/dof/dofMedian.mat
+        src/materials/blitLow.mat
+        src/materials/blitMedium.mat
+        src/materials/blitHigh.mat
+        src/materials/bloom/bloomDownsample.mat
+        src/materials/bloom/bloomUpsample.mat
+        src/materials/ssao/bilateralBlur.mat
+        src/materials/ssao/mipmapDepth.mat
         src/materials/skybox.mat
-        src/materials/sao.mat
-        src/materials/ssao.mat
-        src/materials/tonemapping.mat
-        src/materials/fxaa.mat
+        src/materials/ssao/sao.mat
+        src/materials/separableGaussianBlur.mat
+        src/materials/antiAliasing/fxaa.mat
+        src/materials/antiAliasing/taa.mat
+        src/materials/vsmMipmap.mat
 )
 
 # Embed the binary resource blob for materials.
@@ -168,9 +195,16 @@ message(STATUS "DFG LUT size set to ${DFG_LUT_SIZE}x${DFG_LUT_SIZE}")
 # ==================================================================================================
 # Definitions
 # ==================================================================================================
+
 # "2" corresponds to SYSTRACE_TAG_FILEMENT (See: utils/Systrace.h)
 add_definitions(-DSYSTRACE_TAG=2)
 add_definitions(-DFILAMENT_DFG_LUT_SIZE=${DFG_LUT_SIZE})
+add_definitions(
+    -DFILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB=${FILAMENT_PER_RENDER_PASS_ARENA_SIZE_IN_MB}
+    -DFILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB=${FILAMENT_PER_FRAME_COMMANDS_SIZE_IN_MB}
+    -DFILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB=${FILAMENT_MIN_COMMAND_BUFFERS_SIZE_IN_MB}
+    -DFILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB=${FILAMENT_OPENGL_HANDLE_ARENA_SIZE_IN_MB}
+)
 
 # ==================================================================================================
 # Generate all .filamat: default material, skyboxes, and post-process
@@ -198,20 +232,75 @@ foreach (mat_src ${MATERIAL_SRCS})
     list(APPEND MATERIAL_BINS ${output_path})
 endforeach()
 
-# tonemapping.mat and fxaa.mat have additional dependencies on included files
+# Additional dependencies on included files for materials
 
 add_custom_command(
-    OUTPUT "${MATERIAL_DIR}/tonemapping.filamat"
-    DEPENDS ../shaders/src/tone_mapping.fs
-    DEPENDS ../shaders/src/conversion_functions.fs
-    DEPENDS ../shaders/src/dithering.fs
-    APPEND
+        OUTPUT "${MATERIAL_DIR}/colorGrading.filamat"
+        DEPENDS ../shaders/src/dithering.fs
+        DEPENDS ../shaders/src/vignette.fs
+        DEPENDS ../shaders/src/bloom.fs
+        APPEND
 )
 
 add_custom_command(
-    OUTPUT "${MATERIAL_DIR}/fxaa.filamat"
-    DEPENDS ../shaders/src/fxaa.fs
-    APPEND
+        OUTPUT "${MATERIAL_DIR}/colorGradingAsSubpass.filamat"
+        DEPENDS ../shaders/src/dithering.fs
+        DEPENDS ../shaders/src/vignette.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/fxaa.filamat"
+        DEPENDS src/materials/antiAliasing/fxaa.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/dofDownsample.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/dofMipmap.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/dofDilate.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/dof.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/dofMedian.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/dofCombine.filamat"
+        DEPENDS src/materials/dof/dofUtils.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/sao.filamat"
+        DEPENDS src/materials/ssao/ssaoUtils.fs
+        APPEND
+)
+
+add_custom_command(
+        OUTPUT "${MATERIAL_DIR}/sao.filamat"
+        DEPENDS src/materials/ssao/ssct.fs
+        APPEND
 )
 
 add_custom_command(
@@ -255,42 +344,19 @@ target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
 # Dependencies
 # ==================================================================================================
 
-if (ANDROID)
-    target_link_libraries(${TARGET} PUBLIC GLESv3 EGL android)
-endif()
-
-if (APPLE AND NOT IOS)
-    target_link_libraries(${TARGET} PRIVATE "-framework Cocoa")
-endif()
-
 target_link_libraries(${TARGET} PUBLIC backend)
 target_link_libraries(${TARGET} PUBLIC math)
 target_link_libraries(${TARGET} PUBLIC utils)
 target_link_libraries(${TARGET} PUBLIC geometry) # TODO: remove this dependency after deprecating VertexBuffer::populateTangentQuaternions
 target_link_libraries(${TARGET} PUBLIC filaflat)
 target_link_libraries(${TARGET} PUBLIC filabridge)
-target_link_libraries(${TARGET} PUBLIC image_headers)
 target_link_libraries(${TARGET} PUBLIC ibl)
 
-# Link in matdbg for Desktop + Debug only since it pulls in filamat and a web server.
-if (CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT IOS AND NOT ANDROID AND NOT WEBGL)
+if (FILAMENT_ENABLE_MATDBG)
     target_link_libraries(${TARGET} PUBLIC matdbg)
     add_definitions(-DFILAMENT_ENABLE_MATDBG=1)
 else()
     add_definitions(-DFILAMENT_ENABLE_MATDBG=0)
-endif()
-
-# Android, iOS, and WebGL do not use bluegl.
-if(NOT IOS AND NOT ANDROID AND NOT WEBGL)
-    target_link_libraries(${TARGET} PRIVATE bluegl)
-endif()
-
-if (FILAMENT_SUPPORTS_VULKAN)
-    target_link_libraries(${TARGET} PUBLIC bluevk vkmemalloc)
-endif()
-
-if (FILAMENT_SUPPORTS_METAL)
-    target_link_libraries(${TARGET} PUBLIC "-framework Metal -framework CoreVideo")
 endif()
 
 if (LINUX)
@@ -300,7 +366,7 @@ endif()
 # ==================================================================================================
 # Compiler flags
 # ==================================================================================================
-if (MSVC OR CLANG_CL)
+if (MSVC)
     set(OPTIMIZATION_FLAGS
         /fp:fast
     )
@@ -327,24 +393,16 @@ set(LINUX_COMPILER_FLAGS
         -fPIC
 )
 
-if (MSVC_NATIVE)
-    set(FILAMENT_WARNINGS -W0)
+if (MSVC)
+    set(FILAMENT_WARNINGS /W3)
 else()
     set(FILAMENT_WARNINGS
-            -Wextra -Wno-unused-parameter
+            -Wall -Wextra -Wno-unused-parameter
             -Wextra-semi -Wnewline-eof -Wdeprecated -Wundef
             -Wgnu-conditional-omitted-operand
             -Wweak-vtables -Wnon-virtual-dtor -Wclass-varargs -Wimplicit-fallthrough
             -Wover-aligned
     )
-endif()
-
-# clang-cl maps -Wall to -Weverything, which clutters logs with benign -Wc++98-compat warnings
-# Use /W4 instead for clang-cl builds
-if (CLANG_CL)
-    set(FILAMENT_WARNINGS /W4 ${FILAMENT_WARNINGS})
-else()
-    set(FILAMENT_WARNINGS -Wall ${FILAMENT_WARNINGS})
 endif()
 
 target_compile_options(${TARGET} PRIVATE
@@ -365,6 +423,7 @@ set(INSTALL_TYPE ARCHIVE)
 install(TARGETS ${TARGET} ${INSTALL_TYPE} DESTINATION lib/${DIST_DIR})
 install(DIRECTORY ${PUBLIC_HDR_DIR}/filament DESTINATION include)
 install(FILES "README.md" DESTINATION .)
+install(FILES "../LICENSE" DESTINATION .)
 
 # ==================================================================================================
 # Sub-projects
@@ -372,4 +431,3 @@ install(FILES "README.md" DESTINATION .)
 add_subdirectory(backend)
 add_subdirectory(test)
 add_subdirectory(benchmark)
-add_subdirectory(tools)

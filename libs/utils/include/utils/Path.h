@@ -17,7 +17,9 @@
 #ifndef UTILS_PATH_H_
 #define UTILS_PATH_H_
 
-#include <ostream>
+#include <utils/compiler.h>
+
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -26,7 +28,7 @@ namespace utils {
 /**
  * An abstract representation of file and directory paths.
  */
-class Path {
+class UTILS_PUBLIC Path {
 public:
     /**
      * Creates a new empty path.

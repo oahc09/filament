@@ -9,7 +9,9 @@ dist-*
 toolchains
 filament/docs/html/**
 .vscode
-gltf_baker.ini
 *tmp*.png
 civetweb.txt
 /TAGS
+settings.json
+test*.png
+test*.json

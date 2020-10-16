@@ -17,18 +17,19 @@
 #ifndef TNT_FILAMENT_ENGINE_H
 #define TNT_FILAMENT_ENGINE_H
 
-#include <filament/Camera.h>
-#include <filament/Fence.h>
-#include <filament/SwapChain.h>
-
 #include <backend/Platform.h>
 
 #include <utils/compiler.h>
-#include <utils/EntityManager.h>
+
+namespace utils {
+class Entity;
+class JobSystem;
+} // namespace utils
 
 namespace filament {
 
 class Camera;
+class ColorGrading;
 class DebugRegistry;
 class Fence;
 class IndexBuffer;
@@ -40,6 +41,7 @@ class RenderTarget;
 class Scene;
 class Skybox;
 class Stream;
+class SwapChain;
 class Texture;
 class VertexBuffer;
 class View;
@@ -185,6 +187,66 @@ public:
     static Engine* create(Backend backend = Backend::DEFAULT,
             Platform* platform = nullptr, void* sharedGLContext = nullptr);
 
+#if UTILS_HAS_THREADING
+    /**
+     * A callback used with Engine::createAsync() called once the engine is initialized and it is
+     * safe to call Engine::getEngine(token). This callback is invoked from an arbitrary worker
+     * thread. Engine::getEngine() CANNOT be called from that thread, instead it must be called
+     * from the same thread than Engine::createAsync() was called from.
+     *
+     * @param user   User provided parameter given in createAsync().
+     *
+     * @param token  An opaque token used to call Engine::getEngine().
+     */
+    using CreateCallback = void(void* user, void* token);
+
+    /**
+     * Creates an instance of Engine asynchronously
+     *
+     * @param callback          Callback called once the engine is initialized and it is safe to
+     *                          call Engine::getEngine.
+     *
+     * @param user              A user provided pointer that is given back to callback unmodified.
+     *
+     * @param backend           Which driver backend to use.
+     *
+     * @param platform          A pointer to an object that implements Platform. If this is
+     *                          provided, then this object is used to create the hardware context
+     *                          and expose platform features to it.
+     *
+     *                          If not provided (or nullptr is used), an appropriate Platform
+     *                          is created automatically.
+     *
+     *                          All methods of this interface are called from filament's
+     *                          render thread, which is different from the main thread.
+     *
+     *                          The lifetime of \p platform must exceed the lifetime of
+     *                          the Engine object.
+     *
+     *  @param sharedGLContext  A platform-dependant OpenGL context used as a shared context
+     *                          when creating filament's internal context.
+     *                          Setting this parameter will force filament to use the OpenGL
+     *                          implementation (instead of Vulkan for instance).
+     */
+    static void createAsync(CreateCallback callback, void* user,
+            Backend backend = Backend::DEFAULT,
+            Platform* platform = nullptr, void* sharedGLContext = nullptr);
+
+    /**
+     * Retrieve an Engine* from createAsync(). This must be called from the same thread than
+     * Engine::createAsync() was called from.
+     *
+     * @param token An opaque token given in the createAsync() callback function.
+     *
+     * @return A pointer to the newly created Engine, or nullptr if the Engine couldn't be created.
+     *
+     * @exception utils::PostConditionPanic can be thrown if there isn't enough memory to
+     * allocate the command buffer. If exceptions are disabled, this condition if fatal and
+     * this function will abort.
+     */
+    static Engine* getEngine(void* token);
+#endif
+
     /**
      * Destroy the Engine instance and all associated resources.
      *
@@ -305,7 +367,7 @@ public:
     Camera* createCamera(utils::Entity entity) noexcept;
 
     /**
-     * Returns the Camera component of the given its entity.
+     * Returns the Camera component of the given entity.
      *
      * @param entity An entity.
      * @return A pointer to the Camera component for this entity or nullptr if the entity didn't
@@ -328,10 +390,10 @@ public:
      */
     Fence* createFence() noexcept;
 
-    void destroy(const VertexBuffer* p);        //!< Destroys an VertexBuffer object.
-    void destroy(const Fence* p);               //!< Destroys a Fence object.
-    void destroy(const IndexBuffer* p);         //!< Destroys an IndexBuffer object.
-    void destroy(const IndirectLight* p);       //!< Destroys an IndirectLight object.
+    bool destroy(const VertexBuffer* p);        //!< Destroys an VertexBuffer object.
+    bool destroy(const Fence* p);               //!< Destroys a Fence object.
+    bool destroy(const IndexBuffer* p);         //!< Destroys an IndexBuffer object.
+    bool destroy(const IndirectLight* p);       //!< Destroys an IndirectLight object.
 
     /**
      * Destroys a Material object
@@ -341,16 +403,17 @@ public:
      * @exception utils::PreConditionPanic is thrown if some MaterialInstances remain.
      * no-op if exceptions are disabled and some MaterialInstances remain.
      */
-    void destroy(const Material* p);
-    void destroy(const MaterialInstance* p);    //!< Destroys a MaterialInstance object.
-    void destroy(const Renderer* p);            //!< Destroys a Renderer object.
-    void destroy(const Scene* p);               //!< Destroys a Scene object.
-    void destroy(const Skybox* p);              //!< Destroys a SkyBox object.
-    void destroy(const SwapChain* p);           //!< Destroys a SwapChain object.
-    void destroy(const Stream* p);              //!< Destroys a Stream object.
-    void destroy(const Texture* p);             //!< Destroys a Texture object.
-    void destroy(const RenderTarget* p);        //!< Destroys a RenderTarget object.
-    void destroy(const View* p);                //!< Destroys a View object.
+    bool destroy(const Material* p);
+    bool destroy(const MaterialInstance* p);    //!< Destroys a MaterialInstance object.
+    bool destroy(const Renderer* p);            //!< Destroys a Renderer object.
+    bool destroy(const Scene* p);               //!< Destroys a Scene object.
+    bool destroy(const Skybox* p);              //!< Destroys a SkyBox object.
+    bool destroy(const ColorGrading* p);        //!< Destroys a ColorGrading object.
+    bool destroy(const SwapChain* p);           //!< Destroys a SwapChain object.
+    bool destroy(const Stream* p);              //!< Destroys a Stream object.
+    bool destroy(const Texture* p);             //!< Destroys a Texture object.
+    bool destroy(const RenderTarget* p);        //!< Destroys a RenderTarget object.
+    bool destroy(const View* p);                //!< Destroys a View object.
     void destroy(utils::Entity e);              //!< Destroys all filament-known components from this entity
 
     /**
@@ -396,29 +459,33 @@ public:
     /**
      * helper for creating an Entity and Camera component in one call
      *
+     * @deprecated use createCamera(Entity) instead
+     *
      * @return A camera component
      */
-    inline Camera* createCamera() noexcept {
-        return createCamera(utils::EntityManager::get().create());
-    }
+    UTILS_DEPRECATED
+    Camera* createCamera() noexcept;
 
     /**
      * helper for destroying the Camera component and its Entity in one call
      *
-     * @param camera Camera component to destroy. The associated entity as well as all its
-     *               components managed by filament are destroyed.
+     * @param camera Camera component to destroy. The associated entity is also destroyed.
      * @deprecated use destroyCameraComponent(Entity) instead
      */
-    inline void destroy(const Camera* camera) {
-        destroy(camera->getEntity());
-    }
+    UTILS_DEPRECATED
+    void destroy(const Camera* camera);
 
    /**
      * Invokes one iteration of the render loop, used only on single-threaded platforms.
-     * 
+     *
      * This should be called every time the windowing system needs to paint (e.g. at 60 Hz).
      */
     void execute();
+
+   /**
+     * Retrieves the job system that the Engine has ownership over.
+     */
+    utils::JobSystem& getJobSystem() noexcept;
 
     DebugRegistry& getDebugRegistry() noexcept;
 

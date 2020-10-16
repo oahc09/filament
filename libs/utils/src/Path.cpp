@@ -19,7 +19,6 @@
 #include <sstream>
 #include <ostream>
 #include <iterator>
-#include <regex>
 
 #if defined(WIN32)
 #   include <utils/compiler.h>
@@ -185,17 +184,17 @@ std::vector<std::string> Path::split() const {
     size_t current;
     ssize_t next = -1;
 
-    // Matches a leading disk designator (C:\), forward slash (/), or back slash (\)
-    const static std::regex driveDesignationRegex(R"_regex(^([a-zA-Z]:\\|\\|\/))_regex");
-    std::smatch match;
-    if (std::regex_search(m_path, match, driveDesignationRegex)) {
-        segments.push_back(match[0]);
-        next = match[0].length() - 1;
+    // If there is a leading disk designator such as C:, this naturally becomes the first segment.
+    // However if there there is leading slash or back slash, we need to explicitly preserve it.
+    // Note that we are guaranteed to have at least one char in the path at this point.
+    if (m_path[0] == '/' || m_path[0] == '\\') {
+        segments.push_back(m_path.substr(0, 1));
+        next = 0;
     }
 
     do {
       current = size_t(next + 1);
-      next = m_path.find_first_of(SEPARATOR_STR, current);
+      next = m_path.find_first_of(SEPARATOR, current);
 
       std::string segment(m_path.substr(current, next - current));
       if (!segment.empty()) segments.push_back(segment);
@@ -228,7 +227,7 @@ std::string Path::getCanonicalPath(const std::string& path) {
         std::string segment(path.substr(current, next - current));
         size_t size = segment.length();
 
-        // skip empty (keedp initial)
+        // skip empty (keep initial)
         if (size == 0 && !segments.empty()) {
             continue;
         }

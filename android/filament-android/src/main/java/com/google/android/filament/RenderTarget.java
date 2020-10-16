@@ -16,9 +16,9 @@
 
 package com.google.android.filament;
 
-import android.support.annotation.IntRange;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 /**
  * An offscreen render target that can be associated with a {@link View} and contains
@@ -206,11 +206,11 @@ public class RenderTarget {
     }
 
     private static native long nCreateBuilder();
-    private static native long nDestroyBuilder(long nativeBuilder);
-    private static native long nBuilderTexture(long nativeBuilder, int attachment, long nativeTexture);
-    private static native long nBuilderMipLevel(long nativeBuilder, int attachment, int level);
-    private static native long nBuilderFace(long nativeBuilder, int attachment, int face);
-    private static native long nBuilderLayer(long nativeBuilder, int attachment, int layer);
+    private static native void nDestroyBuilder(long nativeBuilder);
+    private static native void nBuilderTexture(long nativeBuilder, int attachment, long nativeTexture);
+    private static native void nBuilderMipLevel(long nativeBuilder, int attachment, int level);
+    private static native void nBuilderFace(long nativeBuilder, int attachment, int face);
+    private static native void nBuilderLayer(long nativeBuilder, int attachment, int layer);
     private static native long nBuilderBuild(long nativeBuilder, long nativeEngine);
 
     private static native int nGetMipLevel(long nativeRenderTarget, int attachment);

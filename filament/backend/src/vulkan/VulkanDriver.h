@@ -96,9 +96,10 @@ private:
     }
 
     template<typename Dp, typename B>
-    Dp* handle_cast(HandleMap& handleMap, Handle<B>& handle) noexcept {
-        std::lock_guard<std::mutex> lock(mHandleMapMutex);
+    Dp* handle_cast(HandleMap& handleMap, Handle<B> handle) noexcept {
         assert(handle);
+        if (!handle) return nullptr; // better to get a NPE than random behavior/corruption
+        std::lock_guard<std::mutex> lock(mHandleMapMutex);
         auto iter = handleMap.find(handle.getId());
         assert(iter != handleMap.end());
         Blob& blob = iter->second;
@@ -108,8 +109,9 @@ private:
 
     template<typename Dp, typename B>
     const Dp* handle_const_cast(HandleMap& handleMap, const Handle<B>& handle) noexcept {
-        std::lock_guard<std::mutex> lock(mHandleMapMutex);
         assert(handle);
+        if (!handle) return nullptr; // better to get a NPE than random behavior/corruption
+        std::lock_guard<std::mutex> lock(mHandleMapMutex);
         auto iter = handleMap.find(handle.getId());
         assert(iter != handleMap.end());
         Blob& blob = iter->second;
@@ -119,6 +121,8 @@ private:
 
     template<typename Dp, typename B, typename ... ARGS>
     Dp* construct_handle(HandleMap& handleMap, Handle<B>& handle, ARGS&& ... args) noexcept {
+        assert(handle);
+        if (!handle) return nullptr; // better to get a NPE than random behavior/corruption
         std::lock_guard<std::mutex> lock(mHandleMapMutex);
         auto iter = handleMap.find(handle.getId());
         assert(iter != handleMap.end());
@@ -141,6 +145,8 @@ private:
         handleMap.erase(handle.getId());
     }
 
+    void refreshSwapChain();
+
     VulkanContext mContext = {};
     VulkanBinder mBinder;
     VulkanDisposer mDisposer;
@@ -150,6 +156,7 @@ private:
     VulkanRenderTarget* mCurrentRenderTarget = nullptr;
     VulkanSamplerGroup* mSamplerBindings[VulkanBinder::SAMPLER_BINDING_COUNT] = {};
     VkDebugReportCallbackEXT mDebugCallback = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT mDebugMessenger = VK_NULL_HANDLE;
 };
 
 } // namespace backend

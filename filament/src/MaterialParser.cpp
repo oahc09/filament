@@ -49,11 +49,11 @@ MaterialParser::MaterialParserDetails::MaterialParserDetails(Backend backend, co
     switch (backend) {
         case Backend::OPENGL:
             mMaterialTag = ChunkType::MaterialGlsl;
-            mDictionaryTag = ChunkType::DictionaryGlsl;
+            mDictionaryTag = ChunkType::DictionaryText;
             break;
         case Backend::METAL:
             mMaterialTag = ChunkType::MaterialMetal;
-            mDictionaryTag = ChunkType::DictionaryMetal;
+            mDictionaryTag = ChunkType::DictionaryText;
             break;
         case Backend::VULKAN:
             mMaterialTag = ChunkType::MaterialSpirv;
@@ -62,7 +62,7 @@ MaterialParser::MaterialParserDetails::MaterialParserDetails(Backend backend, co
         default:
             // this is for testing purpose -- for e.g.: with the NoopDriver
             mMaterialTag = ChunkType::MaterialGlsl;
-            mDictionaryTag = ChunkType::DictionaryGlsl;
+            mDictionaryTag = ChunkType::DictionaryText;
             break;
     }
 }
@@ -92,20 +92,20 @@ ChunkContainer const& MaterialParser::getChunkContainer() const noexcept {
     return mImpl.mChunkContainer;
 }
 
-bool MaterialParser::parse() noexcept {
+MaterialParser::ParseResult MaterialParser::parse() noexcept {
     ChunkContainer& cc = getChunkContainer();
     if (cc.parse()) {
         if (!cc.hasChunk(mImpl.mMaterialTag) || !cc.hasChunk(mImpl.mDictionaryTag)) {
-            return false;
+            return ParseResult::ERROR_MISSING_BACKEND;
         }
         if (!DictionaryReader::unflatten(cc, mImpl.mDictionaryTag, mImpl.mBlobDictionary)) {
-            return false;
+            return ParseResult::ERROR_OTHER;
         }
         if (!mImpl.mMaterialChunk.readIndex(mImpl.mMaterialTag)) {
-            return false;
+            return ParseResult::ERROR_OTHER;
         }
     }
-    return true;
+    return ParseResult::SUCCESS;
 }
 
 // Accessors
@@ -139,6 +139,10 @@ bool MaterialParser::getSIB(SamplerInterfaceBlock* sib) const noexcept {
 
 bool MaterialParser::getShaderModels(uint32_t* value) const noexcept {
     return mImpl.getFromSimpleChunk(ChunkType::MaterialShaderModels, value);
+}
+
+bool MaterialParser::getMaterialProperties(uint64_t* value) const noexcept {
+    return mImpl.getFromSimpleChunk(ChunkType::MaterialProperties, value);
 }
 
 bool MaterialParser::getDepthWriteSet(bool* value) const noexcept {
@@ -242,6 +246,18 @@ bool MaterialParser::getRequiredAttributes(AttributeBitset* value) const noexcep
     return true;
 }
 
+bool MaterialParser::getRefractionMode(RefractionMode* value) const noexcept {
+    static_assert(sizeof(RefractionMode) == sizeof(uint8_t),
+            "Refraction expected size is wrong");
+    return mImpl.getFromSimpleChunk(ChunkType::MaterialRefraction, (uint8_t*)value);
+}
+
+bool MaterialParser::getRefractionType(RefractionType* value) const noexcept {
+    static_assert(sizeof(RefractionType) == sizeof(uint8_t),
+            "RefractionType expected size is wrong");
+    return mImpl.getFromSimpleChunk(ChunkType::MaterialRefractionType, (uint8_t*)value);
+}
+
 bool MaterialParser::getShader(ShaderBuilder& shader,
         ShaderModel shaderModel, uint8_t variant, ShaderType stage) noexcept {
     return mImpl.mMaterialChunk.getShader(shader,
@@ -271,9 +287,9 @@ bool ChunkUniformInterfaceBlock::unflatten(Unflattener& unflattener,
 
     for (uint64_t i = 0; i < numFields; i++) {
         CString fieldName;
-        uint64_t fieldSize;
-        uint8_t fieldType;
-        uint8_t fieldPrecision;
+        uint64_t fieldSize = 0;
+        uint8_t fieldType = 0;
+        uint8_t fieldPrecision = 0;
 
         if (!unflattener.read(&fieldName)) {
             return false;
@@ -318,10 +334,10 @@ bool ChunkSamplerInterfaceBlock::unflatten(Unflattener& unflattener,
 
     for (uint64_t i = 0; i < numFields; i++) {
         CString fieldName;
-        uint8_t fieldType;
-        uint8_t fieldFormat;
-        uint8_t fieldPrecision;
-        bool fieldMultisample;
+        uint8_t fieldType = 0;
+        uint8_t fieldFormat = 0;
+        uint8_t fieldPrecision = 0;
+        bool fieldMultisample = false;
 
         if (!unflattener.read(&fieldName)) {
             return false;
